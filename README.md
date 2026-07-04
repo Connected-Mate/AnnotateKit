@@ -36,7 +36,7 @@ Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Alex-Connected-Mate/AnnotateKit", from: "0.1.0")
+    .package(url: "https://github.com/Connected-Mate/AnnotateKit", from: "0.1.0")
 ]
 ```
 
