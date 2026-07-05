@@ -19,11 +19,30 @@ enum AnnotationCapture {
         var screenshot: UIImage?
     }
 
+    /// Lightweight hit info for the hover/tap highlight.
+    struct Probe {
+        var frameInScreen: CGRect
+        var title: String
+    }
+
+    /// What lives under a point — used live, while hovering, before any tap.
+    static func probe(atScreenPoint point: CGPoint, in window: UIWindow) -> Probe? {
+        let elements = collectAccessibilityElements(in: window)
+        guard let hit = bestElement(for: point, in: elements) else { return nil }
+        let name = hit.label.flatMap { $0.isEmpty ? nil : $0 }
+            ?? hit.identifier.flatMap { $0.isEmpty ? nil : $0 }
+            ?? hit.className
+        return Probe(
+            frameInScreen: hit.frame,
+            title: "\(typeName(for: hit)) — \(String(name.prefix(40)))"
+        )
+    }
+
     /// `screenPoint` is in screen coordinates (the space `accessibilityFrame` uses).
     static func capture(atScreenPoint screenPoint: CGPoint, in window: UIWindow) -> Result {
         var annotation = Annotation()
         annotation.tapPoint = screenPoint
-        annotation.screenSize = window.screen.bounds.size
+        annotation.screenSize = window.bounds.size
 
         let elements = collectAccessibilityElements(in: window)
         if let hit = bestElement(for: screenPoint, in: elements) {
@@ -37,6 +56,7 @@ enum AnnotationCapture {
         annotation.nearbyTexts = nearbyTexts(around: screenPoint, in: elements, excluding: annotation.elementLabel)
 
         let windowPoint = window.screen.coordinateSpace.convert(screenPoint, to: window.coordinateSpace)
+        annotation.windowRegion = regionDescription(point: windowPoint, in: window.bounds.size)
         annotation.viewChain = viewChain(atWindowPoint: windowPoint, in: window)
         annotation.screenHint = screenHint(in: window, elements: elements)
 
@@ -66,8 +86,21 @@ enum AnnotationCapture {
             if object.isAccessibilityElement {
                 result.append(info(from: object))
             }
-            for child in object.accessibilityElements ?? [] {
-                if let element = child as? NSObject { visit(element) }
+            if let children = object.accessibilityElements {
+                for child in children {
+                    if let element = child as? NSObject { visit(element) }
+                }
+            } else {
+                // SwiftUI hosting views expose their tree through the container
+                // protocol, not the array property — this is where the labels are.
+                let count = object.accessibilityElementCount()
+                if count > 0 && count != NSNotFound {
+                    for index in 0..<min(count, 300) {
+                        if let element = object.accessibilityElement(at: index) as? NSObject {
+                            visit(element)
+                        }
+                    }
+                }
             }
             if let view = object as? UIView {
                 for subview in view.subviews { visit(subview) }
@@ -115,6 +148,14 @@ enum AnnotationCapture {
             .compactMap { seen.insert($0.label).inserted ? $0.label : nil }
             .prefix(6)
             .map { $0 }
+    }
+
+    /// Human placement inside the window ("bottom-right", "middle-center"…).
+    private static func regionDescription(point: CGPoint, in size: CGSize) -> String {
+        guard size.width > 0, size.height > 0 else { return "unknown" }
+        let column = ["left", "center", "right"][max(0, min(2, Int(point.x / (size.width / 3))))]
+        let row = ["top", "middle", "bottom"][max(0, min(2, Int(point.y / (size.height / 3))))]
+        return "\(row)-\(column)"
     }
 
     private static func distance(from point: CGPoint, to rect: CGRect) -> CGFloat {

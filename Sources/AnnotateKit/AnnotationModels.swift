@@ -26,6 +26,9 @@ struct Annotation: Codable, Identifiable {
     var elementType: String = "Element"
     var elementTraits: [String] = []
     var elementFrame: CGRect?
+    /// Placement inside the window ("bottom-right", "middle-center"…). Optional so
+    /// annotation files from older versions still decode.
+    var windowRegion: String?
     /// Visible labels around the tap — grep hints to find the view in source.
     var nearbyTexts: [String] = []
     /// UIKit view chain under the tap, deepest first.
@@ -140,7 +143,13 @@ final class AnnotationStore: ObservableObject {
             if let frame = a.elementFrame {
                 lines.append("- **Element frame**: (\(Int(frame.minX)), \(Int(frame.minY))) \(Int(frame.width))×\(Int(frame.height)) pt")
             }
-            lines.append("- **Tap**: (\(Int(a.tapPoint.x)), \(Int(a.tapPoint.y))) on a \(Int(a.screenSize.width))×\(Int(a.screenSize.height)) pt screen")
+            var tapLine = "- **Tap**: (\(Int(a.tapPoint.x)), \(Int(a.tapPoint.y)))"
+            if let region = a.windowRegion { tapLine += " — \(region) area" }
+            tapLine += " in a \(Int(a.screenSize.width))×\(Int(a.screenSize.height)) pt window"
+            lines.append(tapLine)
+            if (a.elementLabel ?? "").isEmpty && (a.elementIdentifier ?? "").isEmpty {
+                lines.append("- **Caution**: no accessibility metadata under this tap — locate the element from the screenshot, the window region and the nearby texts.")
+            }
             if !a.nearbyTexts.isEmpty {
                 lines.append("- **Nearby texts**: " + a.nearbyTexts.map { "“\($0)”" }.joined(separator: ", "))
             }

@@ -44,10 +44,17 @@ final class AnnotationOverlayController: ObservableObject {
         return candidates.first(where: \.isKeyWindow) ?? candidates.first
     }
 
-    func captureTap(atOverlayPoint point: CGPoint) -> AnnotationCapture.Result? {
+    func captureTap(atWindowPoint point: CGPoint) -> AnnotationCapture.Result? {
         guard let overlayWindow, let main = mainWindow() else { return nil }
         let screenPoint = overlayWindow.coordinateSpace.convert(point, to: overlayWindow.screen.coordinateSpace)
         return AnnotationCapture.capture(atScreenPoint: screenPoint, in: main)
+    }
+
+    /// Live hit info for the hover highlight, in the overlay window's coordinates.
+    func probe(atWindowPoint point: CGPoint) -> AnnotationCapture.Probe? {
+        guard let overlayWindow, let main = mainWindow() else { return nil }
+        let screenPoint = overlayWindow.coordinateSpace.convert(point, to: overlayWindow.screen.coordinateSpace)
+        return AnnotationCapture.probe(atScreenPoint: screenPoint, in: main)
     }
 
     /// Presenting our sheets makes the overlay window key; hand key status back so
@@ -121,14 +128,17 @@ struct AnnotationOverlayRoot: View {
     }
 
     private var captureLayer: some View {
-        Color.blue.opacity(0.04)
-            .contentShape(Rectangle())
-            .onTapGesture(coordinateSpace: .global) { location in
-                if let result = controller.captureTap(atOverlayPoint: location) {
-                    draft = AnnotationDraft(result: result)
-                }
+        // UIKit layer, not a SwiftUI gesture: its recognizers deterministically
+        // consume every click/tap (nothing can leak to the app below) and it hosts
+        // the Agentation-style hover highlight of the element under the pointer.
+        CaptureLayerView { windowPoint in
+            if let result = controller.captureTap(atWindowPoint: windowPoint) {
+                draft = AnnotationDraft(result: result)
             }
-            .ignoresSafeArea()
+        } probe: { windowPoint in
+            controller.probe(atWindowPoint: windowPoint)
+        }
+        .ignoresSafeArea()
     }
 
     private var annotationHint: some View {
@@ -226,6 +236,107 @@ struct AnnotationOverlayRoot: View {
     }
 }
 
+// MARK: - Capture layer (UIKit)
+
+/// Full-screen UIKit view active in annotation mode: consumes every click/tap,
+/// highlights the accessibility element under the pointer (hover, à la Agentation
+/// web) and reports tap points in window coordinates.
+private struct CaptureLayerView: UIViewRepresentable {
+    var onTap: (CGPoint) -> Void
+    var probe: (CGPoint) -> AnnotationCapture.Probe?
+
+    func makeUIView(context: Context) -> CaptureUIView {
+        let view = CaptureUIView()
+        view.onTap = onTap
+        view.probe = probe
+        return view
+    }
+
+    func updateUIView(_ uiView: CaptureUIView, context: Context) {
+        uiView.onTap = onTap
+        uiView.probe = probe
+    }
+}
+
+final class CaptureUIView: UIView {
+    var onTap: ((CGPoint) -> Void)?
+    var probe: ((CGPoint) -> AnnotationCapture.Probe?)?
+
+    private let highlightView = UIView()
+    private let titleLabel = UILabel()
+    private let titleContainer = UIView()
+    private var lastProbePoint = CGPoint(x: -1000, y: -1000)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = UIColor.systemBlue.withAlphaComponent(0.04)
+
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
+        addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(handleHover)))
+
+        highlightView.isUserInteractionEnabled = false
+        highlightView.layer.borderColor = UIColor.systemBlue.cgColor
+        highlightView.layer.borderWidth = 2
+        highlightView.layer.cornerRadius = 5
+        highlightView.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.10)
+        highlightView.isHidden = true
+        addSubview(highlightView)
+
+        titleContainer.isUserInteractionEnabled = false
+        titleContainer.backgroundColor = .systemBlue
+        titleContainer.layer.cornerRadius = 4
+        titleLabel.textColor = .white
+        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        titleContainer.addSubview(titleLabel)
+        titleContainer.isHidden = true
+        addSubview(titleContainer)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let point = gesture.location(in: self)
+        showHighlight(at: point) // touch devices get the flash as feedback
+        guard let window else { return }
+        onTap?(convert(point, to: window))
+    }
+
+    @objc private func handleHover(_ gesture: UIHoverGestureRecognizer) {
+        switch gesture.state {
+        case .began, .changed:
+            let point = gesture.location(in: self)
+            guard abs(point.x - lastProbePoint.x) + abs(point.y - lastProbePoint.y) > 4 else { return }
+            lastProbePoint = point
+            showHighlight(at: point)
+        default:
+            highlightView.isHidden = true
+            titleContainer.isHidden = true
+        }
+    }
+
+    private func showHighlight(at point: CGPoint) {
+        guard let window, let probe = probe?(convert(point, to: window)) else {
+            highlightView.isHidden = true
+            titleContainer.isHidden = true
+            return
+        }
+        let windowRect = window.screen.coordinateSpace.convert(probe.frameInScreen, to: window.coordinateSpace)
+        let local = convert(windowRect, from: window)
+        highlightView.frame = local
+        highlightView.isHidden = false
+
+        titleLabel.text = probe.title
+        titleLabel.sizeToFit()
+        let size = CGSize(width: titleLabel.bounds.width + 12, height: titleLabel.bounds.height + 6)
+        titleLabel.frame = CGRect(x: 6, y: 3, width: titleLabel.bounds.width, height: titleLabel.bounds.height)
+        var origin = CGPoint(x: local.minX, y: local.minY - size.height - 4)
+        if origin.y < 2 { origin.y = local.maxY + 4 }
+        origin.x = min(max(2, origin.x), max(2, bounds.width - size.width - 2))
+        titleContainer.frame = CGRect(origin: origin, size: size)
+        titleContainer.isHidden = false
+    }
+}
+
 /// Reports the pill's frame in window coordinates whenever UIKit moves it.
 private struct PillFrameReader: UIViewRepresentable {
     var onChange: (CGRect) -> Void
@@ -281,6 +392,9 @@ private struct AnnotationNoteSheet: View {
                         LabeledContent("Label", value: label)
                     }
                     LabeledContent("Screen", value: a.screenHint)
+                    if let region = a.windowRegion {
+                        LabeledContent("Where", value: region)
+                    }
                     if !a.nearbyTexts.isEmpty {
                         LabeledContent("Nearby", value: a.nearbyTexts.prefix(3).joined(separator: " · "))
                     }
