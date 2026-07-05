@@ -58,16 +58,21 @@ final class AnnotationOverlayController: ObservableObject {
 }
 
 /// Only opaque to touches while the tool is in use.
+///
+/// The pass-through decision is made purely from state + the pill's UIKit frame —
+/// never by comparing `super.hitTest`'s result to the root view. SwiftUI controls
+/// don't create dedicated UIViews, so a click on the pill legitimately resolves to
+/// the hosting view itself; an identity check would swallow it.
 final class AnnotationWindow: UIWindow {
     weak var controller: AnnotationOverlayController?
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard let view = super.hitTest(point, with: event) else { return nil }
-        if view === rootViewController?.view { return nil }
-        guard let controller else { return view }
-        if controller.isAnnotating { return view }
-        if rootViewController?.presentedViewController != nil { return view }
-        return controller.pillFrame.insetBy(dx: -12, dy: -12).contains(point) ? view : nil
+        guard let controller else { return nil }
+        let interactive = controller.isAnnotating
+            || rootViewController?.presentedViewController != nil
+            || controller.pillFrame.insetBy(dx: -12, dy: -12).contains(point)
+        guard interactive else { return nil }
+        return super.hitTest(point, with: event)
     }
 }
 
@@ -84,8 +89,9 @@ struct AnnotationOverlayRoot: View {
 
     @State private var draft: AnnotationDraft?
     @State private var showList = false
-    @State private var pillOffset: CGSize = .zero
-    @State private var dragTranslation: CGSize = .zero
+    /// Pill centre, in the overlay's own coordinates. `nil` → default bottom-leading.
+    @State private var customCenter: CGPoint?
+    @State private var dragCenter: CGPoint?
 
     var body: some View {
         ZStack {
@@ -148,6 +154,24 @@ struct AnnotationOverlayRoot: View {
     }
 
     private var pill: some View {
+        GeometryReader { geo in
+            pillBody
+                .position(clamped(dragCenter ?? customCenter ?? defaultCenter(in: geo.size), in: geo.size))
+        }
+    }
+
+    private func defaultCenter(in size: CGSize) -> CGPoint {
+        CGPoint(x: 76, y: size.height - 120)
+    }
+
+    private func clamped(_ center: CGPoint, in size: CGSize) -> CGPoint {
+        CGPoint(
+            x: min(max(center.x, 55), max(size.width - 55, 55)),
+            y: min(max(center.y, 90), max(size.height - 30, 90))
+        )
+    }
+
+    private var pillBody: some View {
         HStack(spacing: 0) {
             Button {
                 controller.isAnnotating.toggle()
@@ -158,6 +182,7 @@ struct AnnotationOverlayRoot: View {
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             Divider().frame(height: 20)
             Button {
                 showList = true
@@ -179,31 +204,60 @@ struct AnnotationOverlayRoot: View {
                         }
                     }
             }
+            .buttonStyle(.plain)
         }
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
-        .offset(
-            x: pillOffset.width + dragTranslation.width,
-            y: pillOffset.height + dragTranslation.height
-        )
+        // UIKit ground truth for the window's hitTest — same coordinate space, no
+        // SwiftUI global-space guesswork, and it tracks drags because .position is
+        // real layout (unlike .offset, which geometry readers don't see).
+        .background(PillFrameReader { frame in
+            controller.pillFrame = frame
+        })
         .gesture(
-            DragGesture()
-                .onChanged { dragTranslation = $0.translation }
+            DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                .onChanged { dragCenter = $0.location }
                 .onEnded { value in
-                    pillOffset.width += value.translation.width
-                    pillOffset.height += value.translation.height
-                    dragTranslation = .zero
+                    customCenter = value.location
+                    dragCenter = nil
                 }
         )
-        .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .global)
-        } action: { frame in
-            controller.pillFrame = frame
+    }
+}
+
+/// Reports the pill's frame in window coordinates whenever UIKit moves it.
+private struct PillFrameReader: UIViewRepresentable {
+    var onChange: (CGRect) -> Void
+
+    final class ReporterView: UIView {
+        var onChange: ((CGRect) -> Void)?
+        override var frame: CGRect { didSet { report() } }
+        override var center: CGPoint { didSet { report() } }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            report()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-        .padding(.leading, 16)
-        .padding(.bottom, 100)
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            report()
+        }
+        private func report() {
+            guard let window else { return }
+            onChange?(convert(bounds, to: window))
+        }
+    }
+
+    func makeUIView(context: Context) -> ReporterView {
+        let view = ReporterView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        view.onChange = onChange
+        return view
+    }
+
+    func updateUIView(_ uiView: ReporterView, context: Context) {
+        uiView.onChange = onChange
     }
 }
 
