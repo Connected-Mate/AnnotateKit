@@ -77,6 +77,7 @@ Beyond single taps:
 - **Layout mode** — drag an element to propose a move (recorded as a `rearrange` with before/after rects), two-finger-tap to drop a placeholder block (`placement`). Proxies only; your app is never mutated.
 - **Freeze animations** — pauses every Core Animation in the app so you can annotate a specific frame (SwiftUI's own value-driven animations keep running — see Limitations).
 - **Text capture** — tapping a text element quotes its content in the annotation, for typo reports.
+- **Voice dictation** — settings switch: `keyboard`, `voice`, or `both`. In `voice` the keyboard never opens; tap the element, the popup opens with a big mic, one tap and you talk. Uses Apple's on-device Speech recognizer (Foundation Models stack on iOS 26+, classic on-device Siri model on earlier devices — never a network round-trip). `both` shows a mic pill next to the text field so you can dictate then edit. Requires these Info.plist keys in the host app: `NSSpeechRecognitionUsageDescription`, `NSMicrophoneUsageDescription`.
 
 Hardware keyboard (Catalyst / iPad / simulator), same keys as the web tool while the tool is active: `⌘⇧F` toggle, `P` freeze, `L` layout, `H` hide/show markers, `C` copy, `X` clear all, `S` send, `Esc` cascade-exit.
 
@@ -140,7 +141,8 @@ Four detail levels (compact / standard / detailed / forensic), selectable in set
 | Draw mode | Freehand strokes, in screenshots too |
 | Keyboard shortcuts | Same keys, hardware keyboards |
 | localStorage persistence, 7-day retention | JSON on disk, same retention |
-| Settings (accent, theme, marker behavior, webhooks) | Same, plus output detail level |
+| Settings (accent, theme, marker behavior, webhooks) | Same, plus output detail level + note input mode |
+| — (typed notes only) | **On-device voice dictation** for notes (`voice` / `both` modes) |
 | Schema: `intent`, `severity`, `status`, `thread` | Same fields, wire-compatible |
 | MCP server + SSE + bidirectional resolve | **Same server**, unmodified |
 | Webhooks (`ActionRequest`) | Same payload + User-Agent |

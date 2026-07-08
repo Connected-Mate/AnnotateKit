@@ -79,7 +79,9 @@ private struct AnnotationPopup: View {
     @State private var severity: AnnotationSeverity?
     @State private var componentText: String
     @State private var appeared = false
+    @State private var voiceBaseline: String = ""
     @FocusState private var commentFocused: Bool
+    @StateObject private var voice = AnnotationVoice()
 
     init(
         draft: AnnotationDraft,
@@ -125,7 +127,7 @@ private struct AnnotationPopup: View {
                     .foregroundStyle(AnnotationTheme.onSurface(theme))
             }
 
-            commentEditor
+            noteArea
 
             if draft.annotation.kind == .feedback {
                 pickers
@@ -145,7 +147,21 @@ private struct AnnotationPopup: View {
         .opacity(appeared ? 1 : 0)
         .onAppear {
             withAnimation(AnnotationTheme.popupCurve) { appeared = true }
-            commentFocused = true
+            // Voice-only never opens the keyboard.
+            commentFocused = settings.noteInput != .voice
+            // Voice-only: start listening immediately — one tap on the element,
+            // then talk, like a walkie-talkie.
+            if settings.noteInput == .voice { Task { await voice.start() } }
+        }
+        .onDisappear { voice.stop() }
+        .onChange(of: voice.transcript) { _, transcript in
+            guard voice.state == .listening else { return }
+            comment = voiceBaseline.isEmpty
+                ? transcript
+                : voiceBaseline + " " + transcript
+        }
+        .onChange(of: voice.state) { _, state in
+            if state == .listening { voiceBaseline = comment }
         }
     }
 
@@ -161,6 +177,106 @@ private struct AnnotationPopup: View {
                     .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme).opacity(0.7))
                     .lineLimit(1)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var noteArea: some View {
+        switch settings.noteInput {
+        case .keyboard:
+            commentEditor
+        case .voice:
+            voiceOnlyEditor
+        case .both:
+            VStack(spacing: 8) {
+                commentEditor
+                if voice.isAvailable { micRow }
+            }
+        }
+    }
+
+    private var voiceOnlyEditor: some View {
+        VStack(spacing: 10) {
+            Text(voicePrompt)
+                .font(.system(size: 12))
+                .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+
+            Button(action: voice.toggle) {
+                Image(systemName: voice.state == .listening ? "waveform" : "mic.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 56, height: 56)
+                    .background(voice.state == .listening ? AnnotationTheme.Accent.red.color : accent, in: Circle())
+                    .overlay { if voice.state == .listening { pulseRing } }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(voice.state == .listening ? "Stop dictation" : "Start dictation")
+
+            if !comment.isEmpty {
+                Text(comment)
+                    .font(.system(size: 13))
+                    .foregroundStyle(AnnotationTheme.onSurface(theme))
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(AnnotationTheme.field(theme), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
+    private var micRow: some View {
+        HStack(spacing: 8) {
+            Button(action: voice.toggle) {
+                Image(systemName: voice.state == .listening ? "stop.circle.fill" : "mic.fill")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(voice.state == .listening ? AnnotationTheme.Accent.red.color : accent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        (voice.state == .listening ? AnnotationTheme.Accent.red.color : accent).opacity(0.15),
+                        in: Capsule()
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(voice.state == .listening ? "Stop dictation" : "Dictate")
+
+            Text(micStatusText)
+                .font(.system(size: 11))
+                .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme))
+                .lineLimit(1)
+            Spacer()
+        }
+    }
+
+    private var pulseRing: some View {
+        Circle()
+            .stroke(AnnotationTheme.Accent.red.color.opacity(0.35), lineWidth: 3)
+            .scaleEffect(1.35)
+            .opacity(0.6)
+            .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: voice.state)
+    }
+
+    private var voicePrompt: String {
+        switch voice.state {
+        case .idle: return "Tap the mic and describe what's wrong."
+        case .requesting: return "Preparing…"
+        case .listening: return "Listening — tap again to stop."
+        case .denied: return "Microphone or speech permission denied. Enable them in Settings."
+        case .unavailable: return "Dictation isn't available on this device."
+        case .failed(let reason): return reason
+        }
+    }
+
+    private var micStatusText: String {
+        switch voice.state {
+        case .listening: return "Listening…"
+        case .requesting: return "Starting…"
+        case .denied: return "Permission denied"
+        case .unavailable: return "Dictation unavailable"
+        case .failed(let reason): return reason
+        case .idle: return "Dictate"
         }
     }
 
@@ -397,6 +513,14 @@ private struct AnnotationSettingsCard: View {
                     selected: store.settings.detailLevel,
                     title: { $0.rawValue }
                 ) { store.settings.detailLevel = $0 }
+            }
+
+            row("Note input") {
+                segmented(
+                    options: AnnotationSettings.NoteInput.allCases,
+                    selected: store.settings.noteInput,
+                    title: { $0.rawValue }
+                ) { store.settings.noteInput = $0 }
             }
 
             row("Server (agentation-mcp)") {

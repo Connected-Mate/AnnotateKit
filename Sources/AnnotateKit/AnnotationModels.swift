@@ -207,10 +207,16 @@ struct AnnotationSettings: Codable {
     var theme: AnnotationTheme.ThemeMode = .dark
     var markerClickBehavior: MarkerClickBehavior = .edit
     var detailLevel: OutputDetailLevel = .standard
+    var noteInput: NoteInput = .both
     var webhookURL: String = ""
     var endpoint: String = ""
 
     enum MarkerClickBehavior: String, Codable, CaseIterable { case edit, delete }
+
+    /// Type, dictate, or both.
+    /// `voice` never shows the keyboard — one tap on the mic starts on-device
+    /// dictation, the transcript becomes the note.
+    enum NoteInput: String, Codable, CaseIterable { case keyboard, voice, both }
 
     static let defaultsKey = "feedback-toolbar-settings"
 
