@@ -21,12 +21,20 @@ enum AnnotationCapture {
     /// ships. Returns false (and capture falls back to the UIKit view chain)
     /// if the toggle isn't available.
     private static let accessibilityActivated: Bool = {
+        // PRIVATE_AX is defined only for debug configurations (Package.swift).
+        // On iOS 26+ SwiftUI materialises its accessibility tree without this
+        // switch, so builds without the flag (e.g. the App Store showcase) stay
+        // fully functional there — and never contain the private symbol.
+        #if PRIVATE_AX
         guard let handle = dlopen("/usr/lib/libAccessibility.dylib", RTLD_NOW) else { return false }
         guard let symbol = dlsym(handle, "AXSSetAutomationEnabled")
             ?? dlsym(handle, "_AXSSetAutomationEnabled") else { return false }
         typealias Setter = @convention(c) (Int32) -> Void
         unsafeBitCast(symbol, to: Setter.self)(1)
         return true
+        #else
+        return false
+        #endif
     }()
 
     /// Call early (overlay install) so the tree is built before the first capture.

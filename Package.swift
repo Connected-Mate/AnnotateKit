@@ -11,6 +11,15 @@ let package = Package(
         .library(name: "AnnotateKit", targets: ["AnnotateKit"])
     ],
     targets: [
-        .target(name: "AnnotateKit")
+        .target(
+            name: "AnnotateKit",
+            swiftSettings: [
+                // The private accessibility-automation switch is compiled only
+                // into debug builds — release builds (including any App Store
+                // binary) never contain the symbol. iOS 26+ exposes the SwiftUI
+                // accessibility tree without it.
+                .define("PRIVATE_AX", .when(configuration: .debug))
+            ]
+        )
     ]
 )
