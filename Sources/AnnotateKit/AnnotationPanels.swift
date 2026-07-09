@@ -32,15 +32,7 @@ struct AnnotationPopupHost: View {
                 // the chain, the user sees exactly which block is selected.
                 if draft.isNew, draft.annotation.isMultiSelect != true,
                    let box = draft.annotation.boundingBox {
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(store.settings.accent.color.opacity(0.08))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(store.settings.accent.color, lineWidth: 2)
-                        )
-                        .frame(width: box.rect.width, height: box.rect.height)
-                        .position(x: box.rect.midX, y: box.rect.midY)
-                        .allowsHitTesting(false)
+                    SelectionBoxOverlay(rect: box.rect, accent: store.settings.accent.color)
                 }
 
                 AnnotationPopup(
@@ -80,6 +72,33 @@ struct AnnotationPopupHost: View {
         y = min(max(y, topLimit), max(bottomLimit, topLimit))
         if x.isNaN || y.isNaN { x = size.width / 2; y = size.height / 3 }
         return CGPoint(x: x, y: y)
+    }
+}
+
+/// SwiftUI twin of `SelectionBoxView`: sharp rectangle + corner handles.
+struct SelectionBoxOverlay: View {
+    let rect: CGRect
+    let accent: Color
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(accent.opacity(0.08))
+                .overlay(RoundedRectangle(cornerRadius: 2).stroke(accent, lineWidth: 2))
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+            ForEach(0..<4, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(.white)
+                    .overlay(RoundedRectangle(cornerRadius: 2).stroke(accent, lineWidth: 1.5))
+                    .frame(width: 9, height: 9)
+                    .position(
+                        x: index % 2 == 0 ? rect.minX : rect.maxX,
+                        y: index < 2 ? rect.minY : rect.maxY
+                    )
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -240,42 +259,16 @@ private struct AnnotationPopup: View {
         case .keyboard:
             commentEditor
         case .voice:
-            voiceOnlyEditor
+            // Same popup as always — the field just fills from dictation. It
+            // doesn't accept touches, so the keyboard can never come up.
+            VStack(spacing: 8) {
+                commentEditor.allowsHitTesting(false)
+                micRow
+            }
         case .both:
             VStack(spacing: 8) {
                 commentEditor
                 if voice.isAvailable { micRow }
-            }
-        }
-    }
-
-    private var voiceOnlyEditor: some View {
-        VStack(spacing: 10) {
-            Text(voicePrompt)
-                .font(.system(size: 12))
-                .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme))
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-
-            Button(action: voice.toggle) {
-                Image(systemName: voice.state == .listening ? "waveform" : "mic.fill")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 56, height: 56)
-                    .background(voice.state == .listening ? AnnotationTheme.Accent.red.color : accent, in: Circle())
-                    .overlay { if voice.state == .listening { pulseRing } }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(voice.state == .listening ? "Stop dictation" : "Start dictation")
-
-            if !comment.isEmpty {
-                Text(comment)
-                    .font(.system(size: 13))
-                    .foregroundStyle(AnnotationTheme.onSurface(theme))
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(AnnotationTheme.field(theme), in: RoundedRectangle(cornerRadius: 8))
             }
         }
     }
@@ -301,25 +294,6 @@ private struct AnnotationPopup: View {
                 .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme))
                 .lineLimit(1)
             Spacer()
-        }
-    }
-
-    private var pulseRing: some View {
-        Circle()
-            .stroke(AnnotationTheme.Accent.red.color.opacity(0.35), lineWidth: 3)
-            .scaleEffect(1.35)
-            .opacity(0.6)
-            .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: voice.state)
-    }
-
-    private var voicePrompt: String {
-        switch voice.state {
-        case .idle: return "Tap the mic and describe what's wrong."
-        case .requesting: return "Preparing…"
-        case .listening: return "Listening — tap again to stop."
-        case .denied: return "Microphone or speech permission denied. Enable them in Settings."
-        case .unavailable: return "Dictation isn't available on this device."
-        case .failed(let reason): return reason
         }
     }
 
@@ -633,6 +607,15 @@ private struct AnnotationSettingsCard: View {
                 .font(.system(size: 9))
                 .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme).opacity(0.7))
                 .lineLimit(2)
+
+            // Provenance — always visible where the tool is configured.
+            Link(destination: URL(string: "https://www.agentation.com")!) {
+                Text("Based on Agentation, the open-source web tool ↗ — it was brilliant in the browser and iOS had nothing, so we built the port. Not affiliated.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme).opacity(0.7))
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(16)
         .frame(width: 320)

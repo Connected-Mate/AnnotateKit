@@ -631,24 +631,93 @@ private struct CaptureLayerView: UIViewRepresentable {
     }
 }
 
+/// The web tool's element outline, in UIKit: a sharp rectangle with a square
+/// handle on each corner — reads as "this component is selected", not a blob.
+final class SelectionBoxView: UIView {
+    var accent: UIColor = .systemBlue { didSet { applyAccent() } }
+
+    private let handles: [UIView] = (0..<4).map { _ in UIView() }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        layer.borderWidth = 2
+        layer.cornerRadius = 2
+        for handle in handles {
+            handle.bounds = CGRect(x: 0, y: 0, width: 9, height: 9)
+            handle.backgroundColor = .white
+            handle.layer.borderWidth = 1.5
+            handle.layer.cornerRadius = 2
+            addSubview(handle)
+        }
+        applyAccent()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func applyAccent() {
+        layer.borderColor = accent.cgColor
+        backgroundColor = accent.withAlphaComponent(0.08)
+        for handle in handles { handle.layer.borderColor = accent.cgColor }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let corners = [
+            CGPoint(x: 0, y: 0), CGPoint(x: bounds.maxX, y: 0),
+            CGPoint(x: 0, y: bounds.maxY), CGPoint(x: bounds.maxX, y: bounds.maxY)
+        ]
+        for (handle, corner) in zip(handles, corners) { handle.center = corner }
+    }
+}
+
+/// Dashed rectangle for the long-press marquee — same language as the web
+/// tool's drag selection.
+final class DashedBoxView: UIView {
+    var accent: UIColor = .systemBlue { didSet { applyAccent() } }
+
+    private let dash = CAShapeLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        dash.fillColor = nil
+        dash.lineWidth = 1.5
+        dash.lineDashPattern = [5, 4]
+        layer.addSublayer(dash)
+        applyAccent()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func applyAccent() {
+        dash.strokeColor = accent.cgColor
+        backgroundColor = accent.withAlphaComponent(0.08)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        dash.frame = bounds
+        dash.path = UIBezierPath(roundedRect: bounds, cornerRadius: 3).cgPath
+    }
+}
+
 final class CaptureUIView: UIView {
     var accent: UIColor = .systemBlue {
         didSet {
-            highlightView.layer.borderColor = accent.cgColor
-            highlightView.backgroundColor = accent.withAlphaComponent(0.10)
+            highlightView.accent = accent
             titleContainer.backgroundColor = accent
-            selectionView.layer.borderColor = accent.cgColor
-            selectionView.backgroundColor = accent.withAlphaComponent(0.08)
+            selectionView.accent = accent
         }
     }
     var onTap: ((CGPoint) -> Void)?
     var onDragRect: ((CGRect) -> Void)?
     var probe: ((CGPoint) -> AnnotationCapture.Probe?)?
 
-    private let highlightView = UIView()
+    private let highlightView = SelectionBoxView()
     private let titleLabel = UILabel()
     private let titleContainer = UIView()
-    private let selectionView = UIView()
+    private let selectionView = DashedBoxView()
     private var lastProbePoint = CGPoint(x: -1000, y: -1000)
     private var lastProbeTime: CFTimeInterval = 0
     private var dragStart: CGPoint?
@@ -678,11 +747,7 @@ final class CaptureUIView: UIView {
         pan.require(toFail: longPress)
         addGestureRecognizer(pan)
 
-        highlightView.isUserInteractionEnabled = false
-        highlightView.layer.borderColor = accent.cgColor
-        highlightView.layer.borderWidth = 2
-        highlightView.layer.cornerRadius = 5
-        highlightView.backgroundColor = accent.withAlphaComponent(0.10)
+        highlightView.accent = accent
         highlightView.isHidden = true
         addSubview(highlightView)
 
@@ -695,11 +760,7 @@ final class CaptureUIView: UIView {
         titleContainer.isHidden = true
         addSubview(titleContainer)
 
-        selectionView.isUserInteractionEnabled = false
-        selectionView.layer.borderColor = accent.cgColor
-        selectionView.layer.borderWidth = 1.5
-        selectionView.layer.cornerRadius = 3
-        selectionView.backgroundColor = accent.withAlphaComponent(0.08)
+        selectionView.accent = accent
         selectionView.isHidden = true
         addSubview(selectionView)
     }
