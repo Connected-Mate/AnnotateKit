@@ -467,6 +467,8 @@ final class AnnotationSync: ObservableObject {
     private func wireCopy(_ annotation: Annotation) -> Annotation {
         var copy = annotation
         copy._syncedTo = nil
+        copy._anchorId = nil
+        copy._anchorLabel = nil
         copy.strokes = nil
         return copy
     }

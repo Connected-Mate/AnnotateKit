@@ -155,7 +155,7 @@ Four detail levels (compact / standard / detailed / forensic), selectable in set
 - **No file/line.** SwiftUI doesn't expose source locations at runtime (the web tool reads React fibers). The bridge is accessibility identity + grep hints; adding `accessibilityIdentifier` to key views makes annotations sharper.
 - **Container levels need markup.** SwiftUI flattens its accessibility tree to leaves; a plain `VStack` doesn't exist in it, so the level stepper can only climb to blocks marked `.accessibilityElement(children: .contain)` (plus identified UIKit containers, which come for free).
 - **Freeze is Core Animation only.** UIKit animations, transitions and `CAAnimation`s freeze; SwiftUI's value-driven animations (e.g. `.repeatForever`) are driven by SwiftUI's own clock and keep running — there is no public API to pause it.
-- **Markers are window-anchored.** iOS has no document scroll to track, so a marker doesn't follow content scrolled under it; the screenshot preserves the original context.
+- **Markers re-anchor by accessibility identity.** A marker follows its element while it scrolls and hides when the element isn't on screen (tab switch, pushed screen), matching by `accessibilityIdentifier` first, label otherwise. Elements without either (and drawings, placements, multi-selects) stay window-anchored — one more reason to add identifiers. Duplicate labels resolve to the first match.
 - Elements hidden from accessibility fall back to the UIKit view-chain description.
 - One overlay per window scene (first scene wins on iPad/Catalyst multi-window).
 

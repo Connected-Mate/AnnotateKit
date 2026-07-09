@@ -46,6 +46,7 @@ final class AnnotationOverlayController: ObservableObject {
 
     lazy var store = AnnotationStore()
     lazy var sync = AnnotationSync.shared
+    let anchorTracker = MarkerAnchorTracker()
 
     /// Toolbar frame (window coordinates) — the only interactive zone when idle.
     var toolbarFrame: CGRect = .zero
@@ -67,6 +68,25 @@ final class AnnotationOverlayController: ObservableObject {
         overlayWindow = window
         AnnotationCapture.activateAccessibility()
         sync.start(store: store)
+        anchorTracker.start(controller: self)
+
+        // Returning from the background occasionally leaves the overlay stale
+        // (hidden window or an out-of-date toolbar hit-frame → the circle stops
+        // responding). Re-assert visibility and force a layout pass so every
+        // FrameReporter republishes fresh frames.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshAfterForeground() }
+        }
+    }
+
+    private func refreshAfterForeground() {
+        guard let window = overlayWindow else { return }
+        window.isHidden = false
+        window.windowLevel = .alert + 100
+        window.rootViewController?.view.setNeedsLayout()
+        window.rootViewController?.view.layoutIfNeeded()
     }
 
     /// The app window under the overlay: what we screenshot and hit-test.
@@ -326,7 +346,9 @@ struct AnnotationOverlayRoot: View {
                 if controller.markersVisible {
                     // Empty space in the layer is never hit — the window's hitTest
                     // only lets touches through on the marker frames themselves.
-                    AnnotationMarkersLayer(controller: controller, store: store)
+                    AnnotationMarkersLayer(
+                        controller: controller, store: store, tracker: controller.anchorTracker
+                    )
                 }
                 AnnotationToolbar(controller: controller, store: store)
                 if let draft = controller.draft {
@@ -398,35 +420,117 @@ struct AnnotationOverlayRoot: View {
 
 // MARK: - Markers layer
 
-/// Numbered Agentation-style markers for every saved annotation. Window-anchored
-/// (iOS has no document scroll to track), fades out while a popup is open.
+/// Re-resolves each anchored annotation's element a few times per second so
+/// markers follow scrolled content and disappear when their element isn't on
+/// screen anymore (tab switch, pushed screen). Annotations without an anchor
+/// (drawings, placements, multi-select) keep the static window position.
+@MainActor
+final class MarkerAnchorTracker: ObservableObject {
+    /// id → current window-point, or nil when the element is not on screen.
+    /// Absent key = annotation has no anchor (render at the static position).
+    @Published private(set) var resolved: [String: CGPoint?] = [:]
+
+    private weak var controller: AnnotationOverlayController?
+    private var timer: Timer?
+
+    func start(controller: AnnotationOverlayController) {
+        guard timer == nil else { return }
+        self.controller = controller
+        let timer = Timer(timeInterval: 0.3, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.tick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func tick() {
+        guard let controller, controller.markersVisible, !controller.isHiddenTemporarily,
+              let main = controller.mainWindow() else { return }
+        let anchored = controller.store.annotations.filter {
+            $0._anchorId != nil || $0._anchorLabel != nil
+        }
+        guard !anchored.isEmpty else {
+            if !resolved.isEmpty { resolved = [:] }
+            return
+        }
+
+        let elements = AnnotationCapture.anchorElements(in: main)
+        var out: [String: CGPoint?] = [:]
+        for annotation in anchored {
+            let match = elements.first { element in
+                if let id = annotation._anchorId { return element.identifier == id }
+                return element.label == annotation._anchorLabel && element.label != nil
+            }
+            guard let match, !match.frame.isEmpty else {
+                out[annotation.id] = CGPoint?.none
+                continue
+            }
+            let windowRect = main.screen.coordinateSpace.convert(match.frame, to: main.coordinateSpace)
+            // Same relative offset inside the element as the original tap.
+            var point = CGPoint(x: windowRect.midX, y: windowRect.midY)
+            if let box = annotation.boundingBox, box.rect.width > 0, box.rect.height > 0 {
+                let tapX = annotation.x / 100 * main.bounds.width
+                let fx = min(max((tapX - box.rect.minX) / box.rect.width, 0), 1)
+                let fy = min(max((annotation.y - box.rect.minY) / box.rect.height, 0), 1)
+                point = CGPoint(
+                    x: windowRect.minX + fx * windowRect.width,
+                    y: windowRect.minY + fy * windowRect.height
+                )
+            }
+            out[annotation.id] = main.bounds.insetBy(dx: -10, dy: -10).contains(point) ? point : CGPoint?.none
+        }
+        if out != resolved { resolved = out }
+    }
+}
+
+/// Numbered Agentation-style markers for every saved annotation. Anchored ones
+/// track their element live; the rest stay window-anchored.
 private struct AnnotationMarkersLayer: View {
     @ObservedObject var controller: AnnotationOverlayController
     @ObservedObject var store: AnnotationStore
+    @ObservedObject var tracker: MarkerAnchorTracker
 
     var body: some View {
         GeometryReader { geo in
             ForEach(Array(store.annotations.enumerated()), id: \.element.id) { index, annotation in
-                AnnotationMarker(
-                    number: index + 1,
-                    annotation: annotation,
-                    accent: store.settings.accent.color
-                )
-                // Frame reader + tap BEFORE .position: they must size to the 22 pt
-                // marker itself, not the full-screen positioned wrapper — otherwise
-                // one annotation turns the whole window into a "marker".
-                .background(FrameReporter { frame in
-                    controller.markerFrames[annotation.id] = frame
-                })
-                .onTapGesture { controller.markerTapped(annotation) }
-                .position(
-                    x: annotation.x / 100 * geo.size.width,
-                    y: min(max(annotation.y, 14), geo.size.height - 14)
-                )
-                .transition(.scale.combined(with: .opacity))
+                // Anchored + off-screen → no marker (its element isn't visible).
+                if let point = position(for: annotation, in: geo.size) {
+                    AnnotationMarker(
+                        number: index + 1,
+                        annotation: annotation,
+                        accent: store.settings.accent.color
+                    )
+                    // Frame reader + tap BEFORE .position: they must size to the 22 pt
+                    // marker itself, not the full-screen positioned wrapper — otherwise
+                    // one annotation turns the whole window into a "marker".
+                    .background(FrameReporter { frame in
+                        controller.markerFrames[annotation.id] = frame
+                    })
+                    .onTapGesture { controller.markerTapped(annotation) }
+                    .position(point)
+                    .transition(.scale.combined(with: .opacity))
+                }
             }
         }
         .animation(AnnotationTheme.markerCurve, value: store.annotations.count)
+        // Anchored markers whose element left the screen must also stop being
+        // tap targets in the window's hitTest.
+        .onChange(of: tracker.resolved) { _, resolved in
+            for case let (id, .none) in resolved {
+                controller.markerFrames.removeValue(forKey: id)
+            }
+        }
+    }
+
+    private func position(for annotation: Annotation, in size: CGSize) -> CGPoint? {
+        if let entry = tracker.resolved[annotation.id] {
+            guard let point = entry else { return nil } // anchored, not on screen
+            return point
+        }
+        return CGPoint(
+            x: annotation.x / 100 * size.width,
+            y: min(max(annotation.y, 14), size.height - 14)
+        )
     }
 }
 

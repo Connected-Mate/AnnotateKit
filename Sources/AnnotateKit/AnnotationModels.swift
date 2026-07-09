@@ -110,6 +110,11 @@ struct Annotation: Codable, Identifiable {
 
     /// Local bookkeeping — session this annotation was pushed to. Never sent.
     var _syncedTo: String?
+    /// Local anchoring — identity of the annotated element, so the marker can
+    /// follow it when the content scrolls and hide when the screen changes.
+    /// Never sent.
+    var _anchorId: String?
+    var _anchorLabel: String?
 
     var displayTitle: String { comment.isEmpty ? "(no note)" : comment }
 
@@ -166,6 +171,8 @@ struct Annotation: Codable, Identifiable {
         screenshotFilename = value("screenshotFilename")
         strokes = value("strokes")
         _syncedTo = value("_syncedTo")
+        _anchorId = value("_anchorId")
+        _anchorLabel = value("_anchorLabel")
 
         // Legacy position: tapPoint [x, y] + screenSize [w, h] in points.
         if x == 0, y == 0, let tap = value("tapPoint") as [Double]?, tap.count == 2 {

@@ -127,6 +127,10 @@ enum AnnotationCapture {
         if let label = hit.label, !label.isEmpty { element += " “\(label)”" }
         else if let id = hit.identifier, !id.isEmpty { element += " #\(id)" }
         annotation.element = element
+        // Anchor identity: lets the marker track the element through scrolling
+        // and vanish when it isn't on screen (tab switch, pushed screen).
+        annotation._anchorId = hit.identifier?.nilIfEmpty
+        annotation._anchorLabel = hit.label?.nilIfEmpty
         annotation.elementIdentifier = hit.identifier?.nilIfEmpty
         annotation.elementValue = hit.value?.nilIfEmpty
         annotation.elementTraits = traitNames(of: hit.traits)
@@ -236,6 +240,20 @@ enum AnnotationCapture {
             className: String(describing: type(of: object)),
             object: object
         )
+    }
+
+    /// Identity + frame of every accessibility element on screen — the marker
+    /// re-anchoring pass matches saved annotations against this.
+    struct AnchorElement {
+        var identifier: String?
+        var label: String?
+        var frame: CGRect // screen coordinates
+    }
+
+    static func anchorElements(in window: UIWindow) -> [AnchorElement] {
+        collectAccessibilityElements(in: window)
+            .filter { !$0.isContainer || $0.identifier != nil }
+            .map { AnchorElement(identifier: $0.identifier, label: $0.label, frame: $0.frame) }
     }
 
     /// The containment chain under a point: leaf first, then every bigger
