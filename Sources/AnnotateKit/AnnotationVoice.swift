@@ -44,6 +44,21 @@ final class AnnotationVoice: ObservableObject {
         recognizer = SFSpeechRecognizer(locale: locale)
     }
 
+    /// Locales the speech recognizer can transcribe, sorted by their localized
+    /// display name — the settings panel's language picker.
+    static var supportedLocaleIdentifiers: [String] {
+        SFSpeechRecognizer.supportedLocales()
+            .map(\.identifier)
+            .sorted { lhs, rhs in
+                displayName(forLocaleIdentifier: lhs)
+                    .localizedCaseInsensitiveCompare(displayName(forLocaleIdentifier: rhs)) == .orderedAscending
+            }
+    }
+
+    static func displayName(forLocaleIdentifier id: String) -> String {
+        Locale.current.localizedString(forIdentifier: id)?.capitalized(with: .current) ?? id
+    }
+
     /// Only useful to draw a mic button at all — false hides it entirely
     /// (device without a supported locale, e.g. some enterprise MDM lock).
     var isAvailable: Bool {

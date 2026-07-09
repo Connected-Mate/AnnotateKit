@@ -208,8 +208,18 @@ struct AnnotationSettings: Codable {
     var markerClickBehavior: MarkerClickBehavior = .edit
     var detailLevel: OutputDetailLevel = .standard
     var noteInput: NoteInput = .both
+    /// BCP-47 identifier for dictation ("en-US", "fr-FR"…). nil/empty = follow
+    /// the device's language & region automatically. Optional so settings saved
+    /// by older versions still decode.
+    var voiceLocale: String? = nil
     var webhookURL: String = ""
     var endpoint: String = ""
+
+    /// The locale dictation actually uses.
+    var resolvedVoiceLocale: Locale {
+        guard let id = voiceLocale, !id.isEmpty else { return .autoupdatingCurrent }
+        return Locale(identifier: id)
+    }
 
     enum MarkerClickBehavior: String, Codable, CaseIterable { case edit, delete }
 

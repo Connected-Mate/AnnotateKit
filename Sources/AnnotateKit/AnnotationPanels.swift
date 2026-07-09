@@ -114,6 +114,8 @@ private struct AnnotationPopup: View {
         self.onCancel = onCancel
         self.onDelete = onDelete
         self.onLevelChange = onLevelChange
+        // Dictation language: explicit setting, or the device's language/region.
+        _voice = StateObject(wrappedValue: AnnotationVoice(locale: settings.resolvedVoiceLocale))
         _comment = State(initialValue: draft.annotation.comment)
         _intent = State(initialValue: draft.annotation.intent)
         _severity = State(initialValue: draft.annotation.severity)
@@ -575,6 +577,38 @@ private struct AnnotationSettingsCard: View {
                 ) { store.settings.noteInput = $0 }
             }
 
+            if store.settings.noteInput != .keyboard {
+                row("Dictation language") {
+                    Menu {
+                        Picker("Dictation language", selection: Binding(
+                            get: { store.settings.voiceLocale ?? "" },
+                            set: { store.settings.voiceLocale = $0.isEmpty ? nil : $0 }
+                        )) {
+                            Text("Automatic — \(AnnotationVoice.displayName(forLocaleIdentifier: Locale.autoupdatingCurrent.identifier))")
+                                .tag("")
+                            ForEach(AnnotationVoice.supportedLocaleIdentifiers, id: \.self) { id in
+                                Text(AnnotationVoice.displayName(forLocaleIdentifier: id)).tag(id)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text(currentVoiceLocaleName)
+                                .font(.system(size: 12))
+                                .foregroundStyle(AnnotationTheme.onSurface(theme))
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme))
+                        }
+                        .padding(8)
+                        .background(AnnotationTheme.field(theme), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AnnotationTheme.fieldBorder(theme), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
             row("Server (agentation-mcp)") {
                 urlField("http://your-mac.local:4747", text: $endpoint, onCommit: commitFields)
             }
@@ -618,6 +652,13 @@ private struct AnnotationSettingsCard: View {
         // Closing the card any way (X, dimmer tap) commits typed URLs — the
         // return key must not be the only path that saves them.
         .onDisappear(perform: commitFields)
+    }
+
+    private var currentVoiceLocaleName: String {
+        if let id = store.settings.voiceLocale, !id.isEmpty {
+            return AnnotationVoice.displayName(forLocaleIdentifier: id)
+        }
+        return "Automatic — \(AnnotationVoice.displayName(forLocaleIdentifier: Locale.autoupdatingCurrent.identifier))"
     }
 
     private func commitFields() {
