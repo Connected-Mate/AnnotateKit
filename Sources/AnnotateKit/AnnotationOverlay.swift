@@ -80,7 +80,22 @@ final class AnnotationOverlayController: ObservableObject {
         guard let overlayWindow, let main = mainWindow() else { return }
         let screenPoint = overlayWindow.coordinateSpace.convert(point, to: overlayWindow.screen.coordinateSpace)
         let result = AnnotationCapture.capture(atScreenPoint: screenPoint, in: main)
-        draft = AnnotationDraft(annotation: result.annotation, isNew: true, screenshot: result.screenshot)
+        let chain = AnnotationCapture.hierarchy(atScreenPoint: screenPoint, in: main)
+        draft = AnnotationDraft(
+            annotation: result.annotation, isNew: true, screenshot: result.screenshot, hierarchy: chain
+        )
+    }
+
+    /// Popup level stepper: re-target the draft at another link of the
+    /// containment chain (0 = leaf, up = containing card/section).
+    func setDraftLevel(_ index: Int) {
+        guard var draft = draft, draft.hierarchy.indices.contains(index),
+              let main = mainWindow() else { return }
+        var annotation = draft.annotation
+        AnnotationCapture.retarget(&annotation, to: draft.hierarchy[index], in: main)
+        draft.annotation = annotation
+        draft.level = index
+        self.draft = draft
     }
 
     func captureMulti(windowRect: CGRect) {
@@ -232,6 +247,9 @@ struct AnnotationDraft: Identifiable {
     /// Raw snapshot taken when the element was tapped — markers get drawn onto
     /// it at save time.
     var screenshot: UIImage?
+    /// Containment chain under the tap (leaf first) — the popup's level stepper.
+    var hierarchy: [AnnotationCapture.ElementInfo] = []
+    var level = 0
 }
 
 // MARK: - Window (hit-testing + keyboard shortcuts)
@@ -484,7 +502,8 @@ struct FrameReporter: UIViewRepresentable {
 
 /// Full-screen UIKit view active in annotation mode: consumes every click/tap,
 /// highlights the accessibility element under the pointer (hover, à la Agentation
-/// web), reports tap points, and turns drags into multi-select rectangles.
+/// web) or under the finger while dragging (scrub — release to select), and turns
+/// long-press-then-drag into a multi-select rectangle.
 private struct CaptureLayerView: UIViewRepresentable {
     var accent: UIColor
     var onTap: (CGPoint) -> Void
@@ -529,6 +548,9 @@ final class CaptureUIView: UIView {
     private var lastProbePoint = CGPoint(x: -1000, y: -1000)
     private var lastProbeTime: CFTimeInterval = 0
     private var dragStart: CGPoint?
+    private var isScrubbing = false
+    private var lastHighlightRect = CGRect.null
+    private let scrubFeedback = UISelectionFeedbackGenerator()
 
     /// Same threshold as Agentation's DRAG_THRESHOLD.
     private static let dragThreshold: CGFloat = 8
@@ -539,8 +561,17 @@ final class CaptureUIView: UIView {
 
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
         addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(handleHover)))
+
+        // Hold still → marquee multi-select (haptic confirms). Move right away →
+        // the long-press fails and the pan takes over as a scrub: the element
+        // under the finger highlights live, release selects it.
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
+        longPress.minimumPressDuration = 0.4
+        addGestureRecognizer(longPress)
+
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan))
         pan.maximumNumberOfTouches = 1
+        pan.require(toFail: longPress)
         addGestureRecognizer(pan)
 
         highlightView.isUserInteractionEnabled = false
@@ -578,26 +609,55 @@ final class CaptureUIView: UIView {
         onTap?(convert(point, to: window))
     }
 
+    /// Scrub: drag the finger and the element underneath highlights live (outline
+    /// + name, the touch equivalent of the web tool's hover); releasing selects it.
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        let point = gesture.location(in: self)
+        switch gesture.state {
+        case .began, .changed:
+            isScrubbing = true
+            guard abs(point.x - lastProbePoint.x) + abs(point.y - lastProbePoint.y) > 4 else { return }
+            guard CACurrentMediaTime() - lastProbeTime > 0.08 else { return }
+            lastProbePoint = point
+            lastProbeTime = CACurrentMediaTime()
+            showHighlight(at: point)
+        case .ended:
+            isScrubbing = false
+            guard let window else { return }
+            showHighlight(at: point)
+            onTap?(convert(point, to: window))
+        default:
+            isScrubbing = false
+            highlightView.isHidden = true
+            titleContainer.isHidden = true
+        }
+    }
+
+    /// Marquee multi-select, behind a deliberate long-press so it can't be
+    /// triggered by accident while scrubbing. A still long-press (no drag)
+    /// falls back to selecting the element under the finger.
+    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
             dragStart = point
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            highlightView.isHidden = true
+            titleContainer.isHidden = true
+            selectionView.frame = CGRect(origin: point, size: .zero)
+            selectionView.isHidden = false
         case .changed:
             guard let start = dragStart else { return }
-            let rect = CGRect(origin: start, size: .zero).union(CGRect(origin: point, size: .zero))
-            if max(rect.width, rect.height) >= Self.dragThreshold {
-                selectionView.frame = rect
-                selectionView.isHidden = false
-                highlightView.isHidden = true
-                titleContainer.isHidden = true
-            }
+            selectionView.frame = CGRect(origin: start, size: .zero).union(CGRect(origin: point, size: .zero))
         case .ended:
             defer { dragStart = nil; selectionView.isHidden = true }
             guard let start = dragStart, let window else { return }
             let rect = CGRect(origin: start, size: .zero).union(CGRect(origin: point, size: .zero))
-            guard max(rect.width, rect.height) >= Self.dragThreshold else { return }
-            onDragRect?(convert(rect, to: window))
+            if max(rect.width, rect.height) >= Self.dragThreshold {
+                onDragRect?(convert(rect, to: window))
+            } else {
+                onTap?(convert(point, to: window))
+            }
         default:
             dragStart = nil
             selectionView.isHidden = true
@@ -629,6 +689,12 @@ final class CaptureUIView: UIView {
         }
         let windowRect = window.screen.coordinateSpace.convert(probe.frameInScreen, to: window.coordinateSpace)
         let local = convert(windowRect, from: window)
+        // A tick each time the scrub crosses onto a different element — the finger
+        // "feels" the component boundaries.
+        if isScrubbing, local != lastHighlightRect, !lastHighlightRect.isNull {
+            scrubFeedback.selectionChanged()
+        }
+        lastHighlightRect = local
         highlightView.frame = local
         highlightView.isHidden = false
 

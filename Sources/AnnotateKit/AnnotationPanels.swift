@@ -28,6 +28,21 @@ struct AnnotationPopupHost: View {
                     .contentShape(Rectangle())
                     .onTapGesture { controller.draft = nil }
 
+                // Live outline of the current target — as the level stepper climbs
+                // the chain, the user sees exactly which block is selected.
+                if draft.isNew, draft.annotation.isMultiSelect != true,
+                   let box = draft.annotation.boundingBox {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(store.settings.accent.color.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(store.settings.accent.color, lineWidth: 2)
+                        )
+                        .frame(width: box.rect.width, height: box.rect.height)
+                        .position(x: box.rect.midX, y: box.rect.midY)
+                        .allowsHitTesting(false)
+                }
+
                 AnnotationPopup(
                     draft: draft,
                     settings: store.settings,
@@ -38,7 +53,8 @@ struct AnnotationPopupHost: View {
                     onDelete: draft.isNew ? nil : {
                         store.remove(draft.annotation)
                         controller.draft = nil
-                    }
+                    },
+                    onLevelChange: { controller.setDraftLevel($0) }
                 )
                 // Measure the real height — content varies (quote, pickers,
                 // placement field), a fixed estimate misplaces the popup.
@@ -73,6 +89,7 @@ private struct AnnotationPopup: View {
     let onSubmit: (Annotation) -> Void
     let onCancel: () -> Void
     let onDelete: (() -> Void)?
+    let onLevelChange: (Int) -> Void
 
     @State private var comment: String
     @State private var intent: AnnotationIntent?
@@ -88,13 +105,15 @@ private struct AnnotationPopup: View {
         settings: AnnotationSettings,
         onSubmit: @escaping (Annotation) -> Void,
         onCancel: @escaping () -> Void,
-        onDelete: (() -> Void)?
+        onDelete: (() -> Void)?,
+        onLevelChange: @escaping (Int) -> Void = { _ in }
     ) {
         self.draft = draft
         self.settings = settings
         self.onSubmit = onSubmit
         self.onCancel = onCancel
         self.onDelete = onDelete
+        self.onLevelChange = onLevelChange
         _comment = State(initialValue: draft.annotation.comment)
         _intent = State(initialValue: draft.annotation.intent)
         _severity = State(initialValue: draft.annotation.severity)
@@ -166,18 +185,51 @@ private struct AnnotationPopup: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(draft.annotation.element)
-                .font(.system(size: 12))
-                .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme))
-                .lineLimit(1)
-            if !draft.annotation.screenHint.isEmpty {
-                Text(draft.annotation.screenHint)
-                    .font(.system(size: 10))
-                    .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme).opacity(0.7))
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(draft.annotation.element)
+                    .font(.system(size: 12))
+                    .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme))
                     .lineLimit(1)
+                if !draft.annotation.screenHint.isEmpty {
+                    Text(draft.annotation.screenHint)
+                        .font(.system(size: 10))
+                        .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme).opacity(0.7))
+                        .lineLimit(1)
+                }
+            }
+            if draft.isNew, draft.hierarchy.count > 1, draft.annotation.isMultiSelect != true {
+                Spacer(minLength: 0)
+                levelStepper
             }
         }
+    }
+
+    /// Climb the containment chain: ▲ selects the containing block (the card,
+    /// the section), ▼ goes back toward the leaf that was tapped.
+    private var levelStepper: some View {
+        HStack(spacing: 2) {
+            levelButton(systemName: "chevron.up", enabled: draft.level < draft.hierarchy.count - 1) {
+                onLevelChange(draft.level + 1)
+            }
+            .accessibilityLabel("Select containing element")
+            levelButton(systemName: "chevron.down", enabled: draft.level > 0) {
+                onLevelChange(draft.level - 1)
+            }
+            .accessibilityLabel("Select inner element")
+        }
+    }
+
+    private func levelButton(systemName: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(enabled ? AnnotationTheme.onSurface(theme) : AnnotationTheme.onSurfaceSecondary(theme).opacity(0.4))
+                .frame(width: 24, height: 22)
+                .background(AnnotationTheme.field(theme), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
     }
 
     @ViewBuilder

@@ -72,7 +72,9 @@ Everything is also configurable at runtime from the toolbar's settings panel (ac
 
 Beyond single taps:
 
-- **Drag a rectangle** to annotate several elements at once (multi-select).
+- **Scrub** — drag your finger and the element underneath highlights live (outline + name, with a haptic tick at each component boundary); release to select it. The touch equivalent of the web tool's hover.
+- **Level stepper** — taps land on leaf elements (a label, a chip). The ▲▼ control in the note popup climbs the containment chain to the enclosing block — the card, the section — with a live outline showing exactly what's selected. SwiftUI only materialises container nodes that are marked: put `.accessibilityElement(children: .contain)` + `.accessibilityIdentifier("my-card")` on your cards/sections and they become selectable levels (the iOS equivalent of giving a `div` a class).
+- **Long-press, then drag** a rectangle to annotate several elements at once (multi-select). The haptic confirms the marquee is armed.
 - **Draw mode** — freehand strokes over the UI, attached to the annotation and burned into its screenshot.
 - **Layout mode** — drag an element to propose a move (recorded as a `rearrange` with before/after rects), two-finger-tap to drop a placeholder block (`placement`). Proxies only; your app is never mutated.
 - **Freeze animations** — pauses every Core Animation in the app so you can annotate a specific frame (SwiftUI's own value-driven animations keep running — see Limitations).
@@ -132,9 +134,9 @@ Four detail levels (compact / standard / detailed / forensic), selectable in set
 |---|---|
 | Toolbar (44 px circle ↔ pill, dark `#1a1a1a`, draggable, entrance animation) | Same, in points, same easing curves |
 | 7 accent colors (sRGB + Display P3) | Same values |
-| Hover highlight + element name | Pointer hover (Catalyst/iPad); tap flash on touch |
+| Hover highlight + element name | Pointer hover (Catalyst/iPad); **finger scrub** on touch (drag = live highlight + haptic, release = select) |
 | Click-to-annotate, numbered markers, edit/delete on marker click | Same |
-| Multi-select (drag rectangle) | Same (8 pt threshold, like the web) |
+| Multi-select (drag rectangle) | Long-press then drag (haptic arms the marquee; 8 pt threshold, like the web) |
 | Text selection capture | Tapped text elements are quoted |
 | Freeze animations (`P`) | Core Animation freeze (see Limitations) |
 | Design/layout mode (`L`): placement + rearrange | Proxy-rect move + placeholder blocks |
@@ -151,6 +153,7 @@ Four detail levels (compact / standard / detailed / forensic), selectable in set
 ## Limitations
 
 - **No file/line.** SwiftUI doesn't expose source locations at runtime (the web tool reads React fibers). The bridge is accessibility identity + grep hints; adding `accessibilityIdentifier` to key views makes annotations sharper.
+- **Container levels need markup.** SwiftUI flattens its accessibility tree to leaves; a plain `VStack` doesn't exist in it, so the level stepper can only climb to blocks marked `.accessibilityElement(children: .contain)` (plus identified UIKit containers, which come for free).
 - **Freeze is Core Animation only.** UIKit animations, transitions and `CAAnimation`s freeze; SwiftUI's value-driven animations (e.g. `.repeatForever`) are driven by SwiftUI's own clock and keep running — there is no public API to pause it.
 - **Markers are window-anchored.** iOS has no document scroll to track, so a marker doesn't follow content scrolled under it; the screenshot preserves the original context.
 - Elements hidden from accessibility fall back to the UIKit view-chain description.

@@ -125,6 +125,7 @@ enum AnnotationCapture {
     private static func apply(_ hit: ElementInfo, to annotation: inout Annotation, in window: UIWindow) {
         var element = typeName(for: hit)
         if let label = hit.label, !label.isEmpty { element += " “\(label)”" }
+        else if let id = hit.identifier, !id.isEmpty { element += " #\(id)" }
         annotation.element = element
         annotation.elementIdentifier = hit.identifier?.nilIfEmpty
         annotation.elementValue = hit.value?.nilIfEmpty
@@ -146,13 +147,18 @@ enum AnnotationCapture {
 
     // MARK: - Accessibility tree
 
-    private struct ElementInfo {
+    struct ElementInfo {
         var frame: CGRect // screen coordinates
         var label: String?
         var identifier: String?
         var value: String?
         var traits: UIAccessibilityTraits
         var className: String
+        /// Not an accessibility element itself, but an identified container
+        /// (a card, a section) — what "one level up" from a leaf points to.
+        var isContainer = false
+        /// Backing object, kept only to walk `accessibilityContainer` upwards.
+        weak var object: NSObject?
     }
 
     private static func collectAccessibilityElements(in root: UIView) -> [ElementInfo] {
@@ -167,6 +173,17 @@ enum AnnotationCapture {
             }
             if object.isAccessibilityElement {
                 result.append(info(from: object))
+            } else if hasIdentity(object) {
+                // Containers with an explicit identifier/label are meaningful
+                // blocks even though they aren't elements — collect them so the
+                // hierarchy stepper can climb from a leaf to its card/section.
+                var container = info(from: object)
+                container.isContainer = true
+                if container.frame.isEmpty, let view = object as? UIView, let win = view.window {
+                    let windowRect = view.convert(view.bounds, to: nil)
+                    container.frame = win.coordinateSpace.convert(windowRect, to: win.screen.coordinateSpace)
+                }
+                if !container.frame.isEmpty { result.append(container) }
             }
             if let children = object.accessibilityElements {
                 for child in children {
@@ -193,15 +210,69 @@ enum AnnotationCapture {
         return result
     }
 
+    private static func hasIdentity(_ object: NSObject) -> Bool {
+        if axIdentifier(object) != nil { return true }
+        if let label = object.accessibilityLabel, !label.isEmpty { return true }
+        return false
+    }
+
+    /// SwiftUI's AX nodes don't conform to UIAccessibilityIdentification but do
+    /// respond to the selector — read the identifier either way.
+    private static func axIdentifier(_ object: NSObject) -> String? {
+        if let id = (object as? UIAccessibilityIdentification)?.accessibilityIdentifier?.nilIfEmpty { return id }
+        let selector = NSSelectorFromString("accessibilityIdentifier")
+        guard object.responds(to: selector),
+              let id = object.perform(selector)?.takeUnretainedValue() as? String else { return nil }
+        return id.nilIfEmpty
+    }
+
     private static func info(from object: NSObject) -> ElementInfo {
         ElementInfo(
             frame: object.accessibilityFrame,
             label: object.accessibilityLabel,
-            identifier: (object as? UIAccessibilityIdentification)?.accessibilityIdentifier,
+            identifier: axIdentifier(object),
             value: object.accessibilityValue,
             traits: object.accessibilityTraits,
-            className: String(describing: type(of: object))
+            className: String(describing: type(of: object)),
+            object: object
         )
+    }
+
+    /// The containment chain under a point: leaf first, then every bigger
+    /// element/container holding it (a chip, its card, the section…). What the
+    /// popup's level stepper climbs. Window-sized roots are dropped — selecting
+    /// "the whole screen" says nothing the screen hint doesn't already.
+    static func hierarchy(atScreenPoint point: CGPoint, in window: UIWindow) -> [ElementInfo] {
+        let elements = collectAccessibilityElements(in: window)
+        let containing = elements
+            .filter { !$0.frame.isEmpty && $0.frame.contains(point) }
+            .sorted { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+        // A label and the cell wrapping it at (near) the same frame are one
+        // level, not two — keep the innermost of each pair.
+        var chain: [ElementInfo] = []
+        for info in containing {
+            if let last = chain.last,
+               abs(last.frame.minX - info.frame.minX) < 3,
+               abs(last.frame.minY - info.frame.minY) < 3,
+               abs(last.frame.width - info.frame.width) < 6,
+               abs(last.frame.height - info.frame.height) < 6 {
+                continue
+            }
+            chain.append(info)
+        }
+        let windowArea = window.bounds.width * window.bounds.height
+        chain.removeAll { $0.frame.width * $0.frame.height > windowArea * 0.9 }
+        return Array(chain.prefix(8))
+    }
+
+    /// Re-point a draft annotation at another link of its containment chain
+    /// (level up/down) without re-capturing the screenshot.
+    static func retarget(_ annotation: inout Annotation, to hit: ElementInfo, in window: UIWindow) {
+        annotation.elementIdentifier = nil
+        annotation.elementValue = nil
+        annotation.selectedText = nil
+        annotation.accessibility = ""
+        apply(hit, to: &annotation, in: window)
     }
 
     /// The element under the finger (smallest one containing the point), otherwise
@@ -272,6 +343,7 @@ enum AnnotationCapture {
     }
 
     private static func typeName(for element: ElementInfo) -> String {
+        if element.isContainer { return "Container" }
         let traits = element.traits
         if traits.contains(.button) { return "Button" }
         if traits.contains(.link) { return "Link" }
