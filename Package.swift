@@ -16,8 +16,10 @@ let package = Package(
             swiftSettings: [
                 // The private accessibility-automation switch is compiled only
                 // into debug builds — release builds (including any App Store
-                // binary) never contain the symbol. iOS 26+ exposes the SwiftUI
-                // accessibility tree without it.
+                // binary) never contain the symbol. Without it SwiftUI may not
+                // materialise its accessibility tree at all (observed on iOS 26
+                // and 27 devices): capture then falls back to the UIKit view
+                // chain plus render-tree fragments, losing element identity.
                 .define("PRIVATE_AX", .when(configuration: .debug))
             ]
         )

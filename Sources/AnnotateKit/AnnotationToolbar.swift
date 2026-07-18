@@ -8,9 +8,18 @@
 
 #if DEBUG
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Entrance plays once per process, like the web tool's once-per-page-load flag.
 @MainActor private var hasPlayedEntranceAnimation = false
+
+#if canImport(UIKit)
+private typealias HapticStyle = UIImpactFeedbackGenerator.FeedbackStyle
+#else
+private enum HapticStyle { case light, medium }
+#endif
 
 struct AnnotationToolbar: View {
     @ObservedObject var controller: AnnotationOverlayController
@@ -19,6 +28,7 @@ struct AnnotationToolbar: View {
 
     @State private var customCenter: CGPoint? = Self.loadPosition()
     @State private var dragCenter: CGPoint?
+    @State private var isPickedUp = false
     @State private var entered = hasPlayedEntranceAnimation
     @State private var measuredSize: CGSize = .zero
 
@@ -40,19 +50,50 @@ struct AnnotationToolbar: View {
     }
 
     private func defaultCenter(in size: CGSize) -> CGPoint {
-        // Agentation sits bottom-right, 20 pt in.
-        CGPoint(x: size.width - 42, y: size.height - 62)
+        // Agentation sits bottom-right, 20 pt in — lifted above any bottom bar.
+        CGPoint(x: size.width - 42, y: size.height - 62 - bottomBarInset())
     }
 
     private func clamped(_ center: CGPoint, in size: CGSize) -> CGPoint {
         // Half the measured toolbar size, so the expanded pill never leaves the screen.
         let halfWidth = max(measuredSize.width / 2, 22) + 8
         let halfHeight = max(measuredSize.height / 2, 22) + 8
+        // Never over the app's tab bar: the window's hitTest gives the toolbar
+        // priority around its frame, so a toolbar parked on the tab bar makes
+        // the tabs under it untappable (and its ±12 pt grace zone eats taps
+        // next to it too). Applies to saved positions as well — a position
+        // stored before this rule existed gets lifted out of the strip.
+        let bottomLimit = size.height - halfHeight - bottomBarInset()
         return CGPoint(
             x: min(max(center.x, halfWidth), max(size.width - halfWidth, halfWidth)),
-            y: min(max(center.y, halfHeight + 40), max(size.height - halfHeight, halfHeight + 40))
+            y: min(max(center.y, halfHeight + 40), max(bottomLimit, halfHeight + 40))
         )
     }
+
+    /// Height of the strip covered by a bottom-pinned UITabBar in the app
+    /// window (0 when the app has none). SwiftUI's TabView is UITabBar-backed.
+    private func bottomBarInset() -> CGFloat {
+        #if canImport(UIKit)
+        guard let main = controller.mainWindow(),
+              let tabBar = Self.firstTabBar(in: main),
+              !tabBar.isHidden, tabBar.alpha > 0.01 else { return 0 }
+        let frame = tabBar.convert(tabBar.bounds, to: main)
+        guard frame.maxY > main.bounds.maxY - 1 else { return 0 } // bottom-pinned only
+        return max(0, main.bounds.maxY - frame.minY)
+        #else
+        return 0
+        #endif
+    }
+
+    #if canImport(UIKit)
+    private static func firstTabBar(in view: UIView) -> UITabBar? {
+        if let bar = view as? UITabBar { return bar }
+        for subview in view.subviews {
+            if let bar = firstTabBar(in: subview) { return bar }
+        }
+        return nil
+    }
+    #endif
 
     private var toolbarBody: some View {
         Group {
@@ -62,50 +103,94 @@ struct AnnotationToolbar: View {
                 collapsed
             }
         }
-        .scaleEffect(entered ? 1 : 0.6)
+        .scaleEffect(isPickedUp ? 1.12 : (entered ? 1 : 0.6))
         .opacity(entered ? 1 : 0)
-        .background(FrameReporter { frame in
-            controller.toolbarFrame = frame
-            if abs(frame.width - measuredSize.width) > 0.5 || abs(frame.height - measuredSize.height) > 0.5 {
-                Task { @MainActor in measuredSize = frame.size }
-            }
+        .shadow(color: .black.opacity(isPickedUp ? 0.3 : 0), radius: isPickedUp ? 22 : 0, y: 8)
+        // SwiftUI-side frame reporting, NOT the UIKit FrameReporter: during the
+        // expand→collapse transition the reporter view's UIKit frame can freeze
+        // mid-animation and never get a final layout pass — the window then
+        // hit-tests against a ghost frame ~100 pt away from the visible circle,
+        // and the toolbar becomes untappable until something forces a layout.
+        .background(GeometryReader { proxy in
+            Color.clear
+                .onAppear { reportFrame(proxy.frame(in: .global)) }
+                .onChange(of: proxy.frame(in: .global)) { _, frame in reportFrame(frame) }
         })
-        .gesture(
-            DragGesture(minimumDistance: 3, coordinateSpace: .global)
-                .onChanged { dragCenter = $0.location }
-                .onEnded { value in
-                    customCenter = value.location
-                    dragCenter = nil
-                    Self.savePosition(value.location)
-                }
-        )
+        // `.highPriorityGesture`, so a deliberate drag (≥14 pt) wins over the
+        // collapsed circle's tap and the expanded pill's buttons — while a plain
+        // tap (which never travels 14 pt) falls through to them untouched.
+        .highPriorityGesture(moveGesture)
         .animation(AnnotationTheme.toolbarCurve, value: controller.isAnnotating)
+        .animation(.spring(response: 0.3, dampingFraction: 0.62), value: isPickedUp)
+    }
+
+    /// Drag the toolbar to reposition it. A plain `DragGesture` with a raised
+    /// activation threshold (14 pt) is the reliable primitive here:
+    ///
+    /// - A **quick tap** never travels 14 pt, so it always reaches the Button —
+    ///   annotation mode toggles reliably. (The earlier long-press approach
+    ///   started on touch-*down* and stole the tap, so tapping the circle stopped
+    ///   activating annotation at all.)
+    /// - A **deliberate drag** (finger travels ≥14 pt) picks the toolbar up —
+    ///   haptic + it grows — and you slide it anywhere, e.g. out of a dead zone.
+    ///
+    /// Tapping *elements* on the canvas is a separate view and is untouched.
+    private var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 14, coordinateSpace: .global)
+            .onChanged { value in
+                if !isPickedUp {
+                    isPickedUp = true
+                    Self.haptic(.medium)   // "you've grabbed it"
+                }
+                dragCenter = value.location
+            }
+            .onEnded { value in
+                customCenter = value.location
+                Self.savePosition(value.location)
+                Self.haptic(.light)        // "dropped"
+                dragCenter = nil
+                isPickedUp = false
+            }
+    }
+
+    private func reportFrame(_ frame: CGRect) {
+        controller.toolbarFrame = frame
+        if abs(frame.width - measuredSize.width) > 0.5 || abs(frame.height - measuredSize.height) > 0.5 {
+            measuredSize = frame.size
+        }
+    }
+
+    @MainActor
+    private static func haptic(_ style: HapticStyle) {
+        #if canImport(UIKit)
+        UIImpactFeedbackGenerator(style: style).impactOccurred()
+        #endif
     }
 
     // MARK: Collapsed — 44 pt circle
 
     private var collapsed: some View {
-        Button {
-            controller.toggleActive()
-        } label: {
-            Image(systemName: "scope")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(AnnotationTheme.onSurface(theme))
-                .frame(width: AnnotationTheme.toolbarHeight, height: AnnotationTheme.toolbarHeight)
-                .background(
-                    AnnotationTheme.surface(theme),
-                    in: RoundedRectangle(cornerRadius: AnnotationTheme.toolbarCollapsedRadius)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: AnnotationTheme.toolbarCollapsedRadius)
-                        .stroke(.white.opacity(theme == .dark ? 0.08 : 0), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
-                .shadow(color: .black.opacity(0.1), radius: 16, y: 4)
-                .overlay(alignment: .topTrailing) { badge }
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
+        // A plain tappable view — deliberately NOT a Button. A child Button's own
+        // gesture recognizer fought the toolbar's drag gesture (it alternately
+        // swallowed the tap or blocked the drag). With a plain view, `onTapGesture`
+        // (toggle) and the parent's `highPriorityGesture` drag compose cleanly.
+        Image(systemName: "scope")
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(AnnotationTheme.onSurface(theme))
+            .frame(width: AnnotationTheme.toolbarHeight, height: AnnotationTheme.toolbarHeight)
+            .background(
+                AnnotationTheme.surface(theme),
+                in: RoundedRectangle(cornerRadius: AnnotationTheme.toolbarCollapsedRadius)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AnnotationTheme.toolbarCollapsedRadius)
+                    .stroke(.white.opacity(theme == .dark ? 0.08 : 0), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
+            .shadow(color: .black.opacity(0.1), radius: 16, y: 4)
+            .overlay(alignment: .topTrailing) { badge }
+            .contentShape(Circle())
+            .onTapGesture { controller.toggleActive() }
     }
 
     @ViewBuilder

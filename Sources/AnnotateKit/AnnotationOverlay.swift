@@ -37,7 +37,19 @@ final class AnnotationOverlayController: ObservableObject {
     @Published var isLayoutMode = false
     @Published var markersVisible = true
     @Published var isHiddenTemporarily = false
-    @Published var draft: AnnotationDraft?
+    @Published var draft: AnnotationDraft? {
+        didSet {
+            // The note popup types into this window — it must be key, or the
+            // keyboard's input routes to the app window and typed text never
+            // shows up. Bites when the popup opens while the tool is idle:
+            // marker tap → edit, or a row tapped in the annotations list.
+            if draft != nil {
+                overlayWindow?.makeKey()
+            } else if !isAnnotating {
+                restoreMainKeyWindow()
+            }
+        }
+    }
     @Published var showSettings = false
     @Published var showList = false
     @Published var confirmClearAll = false
@@ -130,6 +142,16 @@ final class AnnotationOverlayController: ObservableObject {
         guard let overlayWindow, let main = mainWindow() else { return nil }
         let screenPoint = overlayWindow.coordinateSpace.convert(point, to: overlayWindow.screen.coordinateSpace)
         return AnnotationCapture.probe(atScreenPoint: screenPoint, in: main)
+    }
+
+    /// Frames (overlay-window coordinates) of every element the marquee rect
+    /// currently covers — the live preview of what multi-select will capture.
+    func probeMulti(windowRect: CGRect) -> [CGRect] {
+        guard let overlayWindow, let main = mainWindow() else { return [] }
+        let screenRect = overlayWindow.coordinateSpace.convert(windowRect, to: overlayWindow.screen.coordinateSpace)
+        return AnnotationCapture.elementFrames(inScreenRect: screenRect, in: main).map {
+            overlayWindow.screen.coordinateSpace.convert($0, to: overlayWindow.coordinateSpace)
+        }
     }
 
     func saveDraft(_ annotation: Annotation, isNew: Bool) {
@@ -400,6 +422,8 @@ struct AnnotationOverlayRoot: View {
                 controller.captureMulti(windowRect: rect)
             } probe: { windowPoint in
                 controller.probe(atWindowPoint: windowPoint)
+            } probeRect: { windowRect in
+                controller.probeMulti(windowRect: windowRect)
             }
             .ignoresSafeArea()
         }
@@ -613,6 +637,7 @@ private struct CaptureLayerView: UIViewRepresentable {
     var onTap: (CGPoint) -> Void
     var onDragRect: (CGRect) -> Void
     var probe: (CGPoint) -> AnnotationCapture.Probe?
+    var probeRect: (CGRect) -> [CGRect]
 
     func makeUIView(context: Context) -> CaptureUIView {
         let view = CaptureUIView()
@@ -620,6 +645,7 @@ private struct CaptureLayerView: UIViewRepresentable {
         view.onTap = onTap
         view.onDragRect = onDragRect
         view.probe = probe
+        view.probeRect = probeRect
         return view
     }
 
@@ -628,6 +654,7 @@ private struct CaptureLayerView: UIViewRepresentable {
         uiView.onTap = onTap
         uiView.onDragRect = onDragRect
         uiView.probe = probe
+        uiView.probeRect = probeRect
     }
 }
 
@@ -708,20 +735,29 @@ final class CaptureUIView: UIView {
             highlightView.accent = accent
             titleContainer.backgroundColor = accent
             selectionView.accent = accent
+            marqueePreview.strokeColor = accent.cgColor
+            marqueePreview.fillColor = accent.withAlphaComponent(0.05).cgColor
         }
     }
     var onTap: ((CGPoint) -> Void)?
     var onDragRect: ((CGRect) -> Void)?
     var probe: ((CGPoint) -> AnnotationCapture.Probe?)?
+    var probeRect: ((CGRect) -> [CGRect])?
 
     private let highlightView = SelectionBoxView()
     private let titleLabel = UILabel()
     private let titleContainer = UIView()
     private let selectionView = DashedBoxView()
+    /// Thin boxes around every element the marquee currently covers — what
+    /// releasing would select, drawn live while the rectangle is dragged.
+    private let marqueePreview = CAShapeLayer()
     private var lastProbePoint = CGPoint(x: -1000, y: -1000)
     private var lastProbeTime: CFTimeInterval = 0
+    private var lastMarqueeProbeTime: CFTimeInterval = 0
+    private var marqueePreviewCount = 0
     private var dragStart: CGPoint?
-    private var isScrubbing = false
+    private var touchDown = false
+    private var marqueeActive = false
     private var lastHighlightRect = CGRect.null
     private let scrubFeedback = UISelectionFeedbackGenerator()
 
@@ -731,6 +767,11 @@ final class CaptureUIView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = UIColor.systemBlue.withAlphaComponent(0.04)
+
+        marqueePreview.strokeColor = accent.cgColor
+        marqueePreview.fillColor = accent.withAlphaComponent(0.05).cgColor
+        marqueePreview.lineWidth = 1.5
+        layer.addSublayer(marqueePreview)
 
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
         addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(handleHover)))
@@ -767,6 +808,32 @@ final class CaptureUIView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Outline the element the moment the finger lands — the touch mirror of the
+    /// web tool's hover. Waiting for the pan to start (≈10 pt of travel) reads
+    /// as "nothing is surrounded" on a plain press. A light haptic confirms the
+    /// landing; the boundary ticks while moving come from `showHighlight`.
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesBegan(touches, with: event)
+        guard let point = touches.first?.location(in: self) else { return }
+        touchDown = true
+        scrubFeedback.prepare()
+        if showHighlight(at: point) {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        touchDown = false
+        lastHighlightRect = .null // next landing gets the landing haptic, not a "boundary" tick
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        touchDown = false
+        lastHighlightRect = .null
+    }
+
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         let point = gesture.location(in: self)
         showHighlight(at: point) // touch devices get the flash as feedback
@@ -780,53 +847,93 @@ final class CaptureUIView: UIView {
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began, .changed:
-            isScrubbing = true
             guard abs(point.x - lastProbePoint.x) + abs(point.y - lastProbePoint.y) > 4 else { return }
             guard CACurrentMediaTime() - lastProbeTime > 0.08 else { return }
             lastProbePoint = point
             lastProbeTime = CACurrentMediaTime()
             showHighlight(at: point)
         case .ended:
-            isScrubbing = false
             guard let window else { return }
             showHighlight(at: point)
             onTap?(convert(point, to: window))
         default:
-            isScrubbing = false
             highlightView.isHidden = true
             titleContainer.isHidden = true
         }
     }
 
     /// Marquee multi-select, behind a deliberate long-press so it can't be
-    /// triggered by accident while scrubbing. A still long-press (no drag)
-    /// falls back to selecting the element under the finger.
+    /// triggered by accident while scrubbing. The marquee visuals only appear
+    /// once the finger actually draws — a still hold keeps the hover outline
+    /// (hold-to-inspect must not dissolve into an empty dashed box), and
+    /// releasing without drawing selects the element under the finger.
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
             dragStart = point
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            highlightView.isHidden = true
-            titleContainer.isHidden = true
-            selectionView.frame = CGRect(origin: point, size: .zero)
-            selectionView.isHidden = false
+            marqueeActive = false
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred() // "marquee armed"
         case .changed:
             guard let start = dragStart else { return }
-            selectionView.frame = CGRect(origin: start, size: .zero).union(CGRect(origin: point, size: .zero))
+            let rect = CGRect(origin: start, size: .zero).union(CGRect(origin: point, size: .zero))
+            if !marqueeActive, max(rect.width, rect.height) >= Self.dragThreshold {
+                marqueeActive = true
+                highlightView.isHidden = true
+                titleContainer.isHidden = true
+                selectionView.isHidden = false
+            }
+            if marqueeActive {
+                selectionView.frame = rect
+                updateMarqueePreview(for: rect)
+            } else {
+                showHighlight(at: point) // sub-threshold jitter: still hovering
+            }
         case .ended:
-            defer { dragStart = nil; selectionView.isHidden = true }
+            defer { dragStart = nil; marqueeActive = false; selectionView.isHidden = true; clearMarqueePreview() }
             guard let start = dragStart, let window else { return }
             let rect = CGRect(origin: start, size: .zero).union(CGRect(origin: point, size: .zero))
-            if max(rect.width, rect.height) >= Self.dragThreshold {
+            if marqueeActive, max(rect.width, rect.height) >= Self.dragThreshold {
                 onDragRect?(convert(rect, to: window))
             } else {
                 onTap?(convert(point, to: window))
             }
         default:
             dragStart = nil
+            marqueeActive = false
             selectionView.isHidden = true
+            clearMarqueePreview()
         }
+    }
+
+    /// Outline every element the marquee covers, live (throttled — each pass
+    /// walks the accessibility tree). A tick fires when the coverage changes,
+    /// so the finger feels elements entering and leaving the rectangle.
+    private func updateMarqueePreview(for rect: CGRect) {
+        guard let window, let probeRect else { return }
+        guard CACurrentMediaTime() - lastMarqueeProbeTime > 0.12 else { return }
+        lastMarqueeProbeTime = CACurrentMediaTime()
+        let frames = probeRect(convert(rect, to: window)).map { convert($0, from: window) }
+        let path = UIBezierPath()
+        for frame in frames {
+            path.append(UIBezierPath(roundedRect: frame.insetBy(dx: -1, dy: -1), cornerRadius: 2))
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        marqueePreview.path = path.cgPath
+        CATransaction.commit()
+        if frames.count != marqueePreviewCount {
+            scrubFeedback.selectionChanged()
+        }
+        marqueePreviewCount = frames.count
+    }
+
+    private func clearMarqueePreview() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        marqueePreview.path = nil
+        CATransaction.commit()
+        marqueePreviewCount = 0
     }
 
     @objc private func handleHover(_ gesture: UIHoverGestureRecognizer) {
@@ -846,17 +953,19 @@ final class CaptureUIView: UIView {
         }
     }
 
-    private func showHighlight(at point: CGPoint) {
+    @discardableResult
+    private func showHighlight(at point: CGPoint) -> Bool {
         guard let window, let probe = probe?(convert(point, to: window)) else {
             highlightView.isHidden = true
             titleContainer.isHidden = true
-            return
+            return false
         }
         let windowRect = window.screen.coordinateSpace.convert(probe.frameInScreen, to: window.coordinateSpace)
         let local = convert(windowRect, from: window)
-        // A tick each time the scrub crosses onto a different element — the finger
-        // "feels" the component boundaries.
-        if isScrubbing, local != lastHighlightRect, !lastHighlightRect.isNull {
+        // A tick each time the finger crosses onto a different element — it
+        // "feels" the component boundaries (landing itself gets the impact
+        // haptic in touchesBegan, not a boundary tick).
+        if touchDown, local != lastHighlightRect, !lastHighlightRect.isNull {
             scrubFeedback.selectionChanged()
         }
         lastHighlightRect = local
@@ -872,6 +981,7 @@ final class CaptureUIView: UIView {
         origin.x = min(max(2, origin.x), max(2, bounds.width - size.width - 2))
         titleContainer.frame = CGRect(origin: origin, size: size)
         titleContainer.isHidden = false
+        return true
     }
 }
 

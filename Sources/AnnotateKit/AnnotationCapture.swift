@@ -58,6 +58,15 @@ enum AnnotationCapture {
         let elements = collectAccessibilityElements(in: window)
         guard let hit = bestElement(for: point, in: elements) else { return nil }
         let name = hit.label?.nilIfEmpty ?? hit.identifier?.nilIfEmpty ?? hit.className
+        // Scrub highlight hugs the render fragment under the finger when it's
+        // finer than the accessibility element — so sliding across a card shows
+        // the icon, the km label, the title as separate stops, not one big block.
+        if let sub = refineSubElement(atScreenPoint: point, within: hit.frame, in: window) {
+            return Probe(
+                frameInScreen: sub.frame,
+                title: "\(sub.name) · in \(String(name.prefix(30)))"
+            )
+        }
         return Probe(
             frameInScreen: hit.frame,
             title: "\(typeName(for: hit)) — \(String(name.prefix(40)))"
@@ -85,6 +94,15 @@ enum AnnotationCapture {
         if let hit = bestElement(for: screenPoint, in: elements) {
             apply(hit, to: &annotation, in: window)
             hitLabel = hit.label
+            // Sub-element precision: keep the leaf's identity (anchor, traits,
+            // accessibility description — that's what the agent greps for), but
+            // point the geometry at the exact render fragment under the finger
+            // (the icon in a Label, the "27" in a merged stats row…).
+            if let sub = refineSubElement(atScreenPoint: screenPoint, within: hit.frame, in: window) {
+                let windowFrame = window.screen.coordinateSpace.convert(sub.frame, to: window.coordinateSpace)
+                annotation.boundingBox = Box(windowFrame)
+                annotation.element = "\(sub.name) — inside \(annotation.element)"
+            }
         }
         annotation.nearbyText = nearbyTexts(around: screenPoint, in: elements, excluding: hitLabel)
             .joined(separator: " · ").nilIfEmpty
@@ -102,6 +120,14 @@ enum AnnotationCapture {
         if annotation.elementPath.isEmpty { annotation.elementPath = annotation.fullPath ?? "" }
 
         return Result(annotation: annotation, screenshot: rawSnapshot(of: window))
+    }
+
+    /// Frames of the elements `captureMulti` would take for this rect — same
+    /// filter, no capture. Drives the live preview while the marquee is drawn.
+    static func elementFrames(inScreenRect screenRect: CGRect, in window: UIWindow) -> [CGRect] {
+        collectAccessibilityElements(in: window)
+            .filter { !$0.frame.isEmpty && $0.frame.intersects(screenRect) }
+            .map(\.frame)
     }
 
     /// Every accessibility element intersecting `screenRect` — the drag-rectangle
@@ -288,7 +314,20 @@ enum AnnotationCapture {
         }
         let windowArea = window.bounds.width * window.bounds.height
         chain.removeAll { $0.frame.width * $0.frame.height > windowArea * 0.9 }
-        return Array(chain.prefix(8))
+        var levels = Array(chain.prefix(8))
+        // Level below the accessibility leaf: the render fragment under the point
+        // (icon, glyph, text run inside a merged control). Keeps the ▲▼ stepper
+        // symmetric — you can climb *down* to the exact thing you tapped, not
+        // only up to the enclosing card.
+        if let leaf = levels.first,
+           let sub = refineSubElement(atScreenPoint: point, within: leaf.frame, in: window) {
+            levels.insert(
+                ElementInfo(frame: sub.frame, label: leaf.label, identifier: leaf.identifier,
+                            value: nil, traits: [], className: sub.name),
+                at: 0
+            )
+        }
+        return levels
     }
 
     /// Re-point a draft annotation at another link of its containment chain
@@ -299,6 +338,84 @@ enum AnnotationCapture {
         annotation.selectedText = nil
         annotation.accessibility = ""
         apply(hit, to: &annotation, in: window)
+    }
+
+    // MARK: - Render-tree refinement (sub-accessibility precision)
+
+    /// A fragment of the render tree under the tap — finer than any accessibility
+    /// element. The accessibility tree is the *identity* ceiling, not the
+    /// *geometry* ceiling: SwiftUI merges a Button/NavigationLink's children into
+    /// one element, marks `Label` icons decorative and combines Form rows — so
+    /// "the icon next to 8.4 km" or the "27" in a stats row simply don't exist as
+    /// elements, in any host app. Their CALayers do. Walking the layer tree under
+    /// the winning element gives kit-level precision on any app, with zero
+    /// restructuring of the host's views.
+    struct SubElement {
+        var frame: CGRect // screen coordinates
+        var name: String
+    }
+
+    /// Smallest visible render fragment under the point that is meaningfully
+    /// smaller than the accessibility leaf (≤85 % of its area). Returns nil when
+    /// the leaf is already the finest thing there — the AX result stands.
+    static func refineSubElement(
+        atScreenPoint screenPoint: CGPoint, within leafScreenFrame: CGRect, in window: UIWindow
+    ) -> SubElement? {
+        let windowPoint = window.screen.coordinateSpace.convert(screenPoint, to: window.coordinateSpace)
+        let leafFrame = window.screen.coordinateSpace.convert(leafScreenFrame, to: window.coordinateSpace)
+        let leafArea = leafFrame.width * leafFrame.height
+        guard leafArea > 0 else { return nil }
+
+        var best: (frame: CGRect, area: CGFloat, name: String)?
+        func visit(_ layer: CALayer) {
+            guard !layer.isHidden, layer.opacity > 0.01 else { return }
+            let frame = layer.convert(layer.bounds, to: window.layer)
+            // A clipping layer that doesn't contain the point can't contribute,
+            // nor can its children.
+            if layer.masksToBounds && !frame.insetBy(dx: -2, dy: -2).contains(windowPoint) { return }
+            if frame.contains(windowPoint),
+               frame.width >= 4, frame.height >= 4,
+               frame.width * frame.height <= leafArea * 0.85,
+               leafFrame.insetBy(dx: -8, dy: -8).contains(CGPoint(x: frame.midX, y: frame.midY)),
+               rendersContent(layer) {
+                let area = frame.width * frame.height
+                if best == nil || area < best!.area { best = (frame, area, fragmentName(of: layer)) }
+            }
+            for sub in layer.sublayers ?? [] { visit(sub) }
+        }
+        visit(window.layer)
+
+        guard let best else { return nil }
+        return SubElement(
+            frame: window.coordinateSpace.convert(best.frame, to: window.screen.coordinateSpace),
+            name: best.name
+        )
+    }
+
+    /// Only layers that actually draw something — pure layout containers (full-card
+    /// wrappers, stacks) would otherwise win as "smallest fragment".
+    private static func rendersContent(_ layer: CALayer) -> Bool {
+        if layer.contents != nil { return true }
+        if layer is CAShapeLayer || layer is CAGradientLayer || layer is CATextLayer { return true }
+        if let bg = layer.backgroundColor, bg.alpha > 0.05 { return true }
+        if layer.borderWidth > 0 { return true }
+        if let view = layer.delegate as? UIView {
+            if view is UIImageView || view is UILabel { return true }
+            let cls = String(describing: type(of: view))
+            if cls.contains("Drawing") || cls.contains("Graphics") || cls.contains("Text") { return true }
+        }
+        return false
+    }
+
+    private static func fragmentName(of layer: CALayer) -> String {
+        let raw: String
+        if let view = layer.delegate as? UIView { raw = String(describing: type(of: view)) }
+        else { raw = String(describing: type(of: layer)) }
+        if raw.contains("Text") || raw.contains("Drawing") || raw.contains("Label") { return "Text fragment (\(raw))" }
+        if layer.contents != nil || layer.delegate is UIImageView { return "Glyph/Image (\(raw))" }
+        if layer is CAShapeLayer { return "Shape (\(raw))" }
+        if layer is CAGradientLayer { return "Gradient block (\(raw))" }
+        return raw
     }
 
     /// The element under the finger (smallest one containing the point), otherwise
@@ -330,12 +447,12 @@ enum AnnotationCapture {
     }
 
     private static func nearbyElementDescriptions(around point: CGPoint, in elements: [ElementInfo]) -> [String] {
-        elements
-            .map { (element: $0, distance: distance(from: point, to: $0.frame)) }
+        typealias Scored = (element: ElementInfo, distance: CGFloat)
+        let scored: [Scored] = elements.map { (element: $0, distance: distance(from: point, to: $0.frame)) }
+        let close: [Scored] = scored
             .filter { $0.distance > 0 && $0.distance < 120 }
             .sorted { $0.distance < $1.distance }
-            .prefix(5)
-            .compactMap { name(of: $0.element) }
+        return close.prefix(5).compactMap { name(of: $0.element) }
     }
 
     private static func name(of element: ElementInfo) -> String? {

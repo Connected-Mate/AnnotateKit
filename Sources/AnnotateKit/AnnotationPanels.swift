@@ -29,9 +29,15 @@ struct AnnotationPopupHost: View {
                     .onTapGesture { controller.draft = nil }
 
                 // Live outline of the current target — as the level stepper climbs
-                // the chain, the user sees exactly which block is selected.
-                if draft.isNew, draft.annotation.isMultiSelect != true,
-                   let box = draft.annotation.boundingBox {
+                // the chain, the user sees exactly which block is selected. Also
+                // shown when editing (best effort: the frame captured at creation)
+                // and for multi-select, where every chosen element gets its box —
+                // without it the popup says "N elements" and nothing tells the
+                // user which ones.
+                if draft.annotation.isMultiSelect == true,
+                   let boxes = draft.annotation.elementBoundingBoxes {
+                    MultiSelectionOverlay(rects: boxes.map(\.rect), accent: store.settings.accent.color)
+                } else if let box = draft.annotation.boundingBox {
                     SelectionBoxOverlay(rect: box.rect, accent: store.settings.accent.color)
                 }
 
@@ -102,6 +108,26 @@ struct SelectionBoxOverlay: View {
     }
 }
 
+/// One thin box per selected element of a multi-select — the "which ones"
+/// answer the single-target corner-handle box gives for a plain tap.
+struct MultiSelectionOverlay: View {
+    let rects: [CGRect]
+    let accent: Color
+
+    var body: some View {
+        ZStack {
+            ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(accent.opacity(0.06))
+                    .overlay(RoundedRectangle(cornerRadius: 2).stroke(accent, lineWidth: 1.5))
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 private struct AnnotationPopup: View {
     let draft: AnnotationDraft
     let settings: AnnotationSettings
@@ -147,12 +173,14 @@ private struct AnnotationPopup: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-            if let selected = draft.annotation.selectedText, draft.annotation.isMultiSelect != true {
+            // Multi-select included: its selectedText is the joined labels of
+            // the chosen elements — it names what "N elements" refers to.
+            if let selected = draft.annotation.selectedText {
                 Text("“\(selected)”")
                     .font(.system(size: 11))
                     .italic()
                     .foregroundStyle(AnnotationTheme.onSurfaceSecondary(theme))
-                    .lineLimit(2)
+                    .lineLimit(draft.annotation.isMultiSelect == true ? 3 : 2)
             }
             if draft.annotation.kind == .rearrange, let move = draft.annotation.rearrange {
                 Text(rearrangeSummary(move))
