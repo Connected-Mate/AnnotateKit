@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "annotatekit": {
+      "command": "npx",
+      "args": ["-y", "@connected-mate/annotatekit-mcp@0.5.0"]
+    }
+  }
+}

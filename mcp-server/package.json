@@ -1,0 +1,29 @@
+{
+  "name": "@connected-mate/annotatekit-mcp",
+  "version": "0.5.0",
+  "description": "Official MCP connector for AnnotateKit iOS visual feedback",
+  "type": "module",
+  "bin": { "annotatekit-mcp": "dist/cli.js" },
+  "exports": { ".": "./dist/server.js" },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js http",
+    "test": "node --test --import tsx test/**/*.test.ts",
+    "check": "npm run build && npm test"
+  },
+  "keywords": ["mcp", "ios", "swiftui", "annotations", "codex", "cursor", "claude"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/Connected-Mate/AnnotateKit.git", "directory": "mcp-server" },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

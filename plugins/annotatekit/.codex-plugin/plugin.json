@@ -1,0 +1,29 @@
+{
+  "name": "annotatekit",
+  "version": "0.5.0",
+  "description": "Turn iOS visual feedback into actionable coding-agent context.",
+  "author": {
+    "name": "Connected Mate",
+    "email": "support@connected-mate.com",
+    "url": "https://github.com/Connected-Mate"
+  },
+  "homepage": "https://github.com/Connected-Mate/AnnotateKit",
+  "repository": "https://github.com/Connected-Mate/AnnotateKit",
+  "license": "MIT",
+  "keywords": ["ios", "swiftui", "visual-feedback", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "AnnotateKit",
+    "shortDescription": "Act on iOS visual feedback",
+    "longDescription": "AnnotateKit connects visual feedback captured directly in an iOS Debug build to coding agents. Inspect pending annotations with accessibility identity, nearby text, view hierarchy, styles, position, and intent; reply to the reviewer; then acknowledge, resolve, or dismiss each item.",
+    "developerName": "Connected Mate",
+    "category": "Developer Tools",
+    "capabilities": ["Read iOS UI annotations", "Update annotation status", "Reply to annotation threads"],
+    "websiteURL": "https://github.com/Connected-Mate/AnnotateKit",
+    "privacyPolicyURL": "https://github.com/Connected-Mate/AnnotateKit/blob/main/docs/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/Connected-Mate/AnnotateKit/blob/main/docs/TERMS.md",
+    "defaultPrompt": ["Show my pending iOS UI feedback.", "Implement and resolve the selected iOS annotation.", "Reply to the latest annotation asking for clarification."],
+    "brandColor": "#2563EB"
+  },
+  "mcpServers": "./.mcp.json"
+}

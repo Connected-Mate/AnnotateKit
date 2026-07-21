@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: annotatekit-mcp
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    autoDeployTrigger: commit

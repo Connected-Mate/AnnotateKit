@@ -1,0 +1,5 @@
+.git
+.build
+mcp-server/node_modules
+mcp-server/dist
+Assets

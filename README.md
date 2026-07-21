@@ -85,6 +85,24 @@ Hardware keyboard (Catalyst / iPad / simulator), same keys as the web tool while
 
 ## Getting annotations to your agent
 
+### Official AnnotateKit connector (Cursor, Codex, Claude)
+
+This repository now ships its own MIT-licensed MCP connector. One process exposes MCP over stdio and the iOS bridge over HTTP on port 4747:
+
+```bash
+npx -y @connected-mate/annotatekit-mcp
+```
+
+The checked-in [`.mcp.json`](.mcp.json) works with project-scoped MCP clients. Cursor and Codex plugin manifests live under [`plugins/annotatekit`](plugins/annotatekit); Claude Code can add the same connector with:
+
+```bash
+claude mcp add --scope project annotatekit -- npx -y @connected-mate/annotatekit-mcp@0.5.0
+```
+
+Then point AnnotateKit to `http://127.0.0.1:4747` in Simulator, or to your Mac's LAN address on a physical device. For hosted clients, deploy the included Dockerfile and use `https://your-domain.example/mcp` as the remote Streamable HTTP endpoint.
+
+The connector exposes narrowly scoped tools to list sessions, read feedback, acknowledge work, reply, resolve, and dismiss. Each tool carries explicit MCP safety annotations required by public connector directories.
+
 Five transports, use whichever fits your loop:
 
 1. **MCP, real time (the good one)** — run Agentation's own companion server on your Mac and point AnnotateKit at it:

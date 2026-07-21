@@ -1,0 +1,12 @@
+{
+  "name": "annotatekit",
+  "version": "0.5.0",
+  "description": "Turn iOS visual feedback into actionable coding-agent context.",
+  "author": { "name": "Connected Mate", "email": "support@connected-mate.com" },
+  "homepage": "https://github.com/Connected-Mate/AnnotateKit",
+  "repository": "https://github.com/Connected-Mate/AnnotateKit",
+  "license": "MIT",
+  "keywords": ["ios", "swiftui", "visual-feedback", "mcp"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}
