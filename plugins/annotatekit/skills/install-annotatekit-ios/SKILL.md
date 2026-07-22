@@ -1,6 +1,6 @@
 ---
 name: install-annotatekit-ios
-description: Install and configure AnnotateKit in an iOS or SwiftUI application so on-device visual annotations are sent directly to Cursor or another MCP coding agent. Use when adding AnnotateKit, enabling iOS UI annotation, or setting up the AnnotateKit MCP workflow.
+description: Install and configure AnnotateKit in an iOS or SwiftUI application so on-device visual annotations are sent directly to Codex through the bundled MCP bridge. Use when adding AnnotateKit, enabling iOS UI annotation, or setting up the AnnotateKit workflow.
 ---
 
 # Install AnnotateKit in an iOS app
@@ -18,8 +18,8 @@ AnnotateKit.configure(endpoint: URL(string: "http://127.0.0.1:4747"))
 ```
 
 Use `127.0.0.1` for Simulator. For a physical iPhone, use the development Mac's reachable LAN address. Never put the debug bridge in production configuration.
-6. Ensure the bundled `annotatekit` MCP server is active. It starts the local iOS HTTP bridge on port `4747` and exposes the same in-memory annotation session to Cursor.
+6. Ensure the bundled `annotatekit` MCP server is active. It starts the local iOS HTTP bridge on port `4747` and exposes the same in-memory annotation session to Codex.
 7. Build the iOS target without launching a simulator unless the repository instructions and user explicitly authorize it. Report any host-app Info.plist additions required by optional voice dictation.
-8. Explain the finished loop to the developer: run the Debug app, annotate the exact on-screen element, add a note, and tap **Send**. Cursor can then call `annotatekit_list_sessions` and `annotatekit_get_pending`, implement the fix, reply, and resolve it.
+8. Explain the finished loop to the developer: run the Debug app, annotate the exact on-screen element, add a note, and tap **Send**. Offer to start the live feedback loop immediately. Codex can wait with `annotatekit_watch_send`, implement the fix, reply, resolve it, and continue watching in the same active thread.
 
 AnnotateKit is debug tooling. Do not add release-only code paths, production telemetry, or public network exposure as part of installation.
