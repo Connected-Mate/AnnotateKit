@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "annotatekit": {
+      "command": "node",
+      "args": ["${CURSOR_PLUGIN_ROOT}/scripts/annotatekit-mcp.mjs"]
+    }
+  }
+}
