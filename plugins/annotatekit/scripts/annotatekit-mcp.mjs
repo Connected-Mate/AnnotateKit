@@ -5,6 +5,7 @@ import process from "node:process";
 
 const sessions = new Map();
 const listeners = new Set();
+const sendWaiters = new Set();
 let sequence = 0;
 
 const now = () => new Date().toISOString();
@@ -20,15 +21,25 @@ const toolDefinitions = [
   { name: "annotatekit_list_sessions", description: "List active AnnotateKit iOS visual-feedback sessions before reading annotations.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { title: "List annotation sessions", readOnlyHint: true, openWorldHint: false, destructiveHint: false } },
   { name: "annotatekit_get_pending", description: "Read pending iOS UI annotations with captured position and accessibility context, optionally for one session.", inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false }, annotations: { title: "Get pending annotations", readOnlyHint: true, openWorldHint: false, destructiveHint: false } },
   { name: "annotatekit_get_session", description: "Read one AnnotateKit session and all its annotations by exact session ID.", inputSchema: { type: "object", required: ["sessionId"], properties: { sessionId: { type: "string" } }, additionalProperties: false }, annotations: { title: "Get annotation session", readOnlyHint: true, openWorldHint: false, destructiveHint: false } },
+  { name: "annotatekit_watch_send", description: "Wait until the developer taps Send in AnnotateKit, then return the pending annotations from that iOS session. Use this in an active Cursor chat for a hands-free annotate, send, implement loop.", inputSchema: { type: "object", properties: { sessionId: { type: "string" }, timeoutSeconds: { type: "integer", minimum: 1, maximum: 300, default: 120 } }, additionalProperties: false }, annotations: { title: "Watch for iOS feedback", readOnlyHint: true, openWorldHint: false, destructiveHint: false } },
   ...["acknowledge", "resolve", "dismiss"].map(action => ({ name: `annotatekit_${action}`, description: `${action[0].toUpperCase() + action.slice(1)} one exact annotation with a concise summary. Resolve only after the requested change is implemented and verified.`, inputSchema: { type: "object", required: ["annotationId", "summary"], properties: { annotationId: { type: "string" }, summary: { type: "string", minLength: 1, maxLength: 2000 } }, additionalProperties: false }, annotations: { title: `${action[0].toUpperCase() + action.slice(1)} annotation`, readOnlyHint: false, openWorldHint: false, destructiveHint: false } })),
   { name: "annotatekit_reply", description: "Append a visible agent reply to one annotation thread without resolving it.", inputSchema: { type: "object", required: ["annotationId", "message"], properties: { annotationId: { type: "string" }, message: { type: "string", minLength: 1, maxLength: 4000 } }, additionalProperties: false }, annotations: { title: "Reply to annotation", readOnlyHint: false, openWorldHint: false, destructiveHint: false } }
 ];
 
 const textResult = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] });
-const callTool = (name, args = {}) => {
+const waitForSend = (sessionId, timeoutSeconds = 120) => new Promise(resolve => {
+  const waiter = { sessionId, resolve };
+  sendWaiters.add(waiter);
+  const timeout = setTimeout(() => { sendWaiters.delete(waiter); resolve({ sent: false, reason: "timeout", annotations: pending(sessionId) }); }, Math.min(Math.max(timeoutSeconds, 1), 300) * 1000);
+  waiter.finish = value => { clearTimeout(timeout); sendWaiters.delete(waiter); resolve(value); };
+});
+const notifySend = sessionId => { const annotations = pending(sessionId); for (const waiter of [...sendWaiters]) { if (!waiter.sessionId || waiter.sessionId === sessionId) waiter.finish({ sent: true, sessionId, annotations }); } };
+
+const callTool = async (name, args = {}) => {
   if (name === "annotatekit_list_sessions") return textResult([...sessions.values()].map(publicSession));
   if (name === "annotatekit_get_pending") return textResult(pending(args.sessionId));
   if (name === "annotatekit_get_session") { const session = requiredSession(args.sessionId); return textResult({ ...publicSession(session), annotations: [...session.annotations.values()] }); }
+  if (name === "annotatekit_watch_send") return textResult(await waitForSend(args.sessionId, args.timeoutSeconds));
   if (["annotatekit_acknowledge", "annotatekit_resolve", "annotatekit_dismiss"].includes(name)) { const { session, annotation } = findAnnotation(args.annotationId); const status = name.replace("annotatekit_", "").replace("acknowledge", "acknowledged").replace("resolve", "resolved").replace("dismiss", "dismissed"); return textResult(updateAnnotation(session, annotation.id, { status, resolution: args.summary, resolvedAt: now(), resolvedBy: "cursor" })); }
   if (name === "annotatekit_reply") { const { session, annotation } = findAnnotation(args.annotationId); const thread = [...(annotation.thread ?? []), { id: randomUUID(), role: "agent", content: args.message, timestamp: Date.now() }]; return textResult(updateAnnotation(session, annotation.id, { thread })); }
   throw new Error(`Unknown tool: ${name}`);
@@ -37,6 +48,18 @@ const callTool = (name, args = {}) => {
 const sendRpc = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 let stdinBuffer = "";
 process.stdin.setEncoding("utf8");
+const handleRpc = async request => {
+  if (request.id === undefined) return;
+  try {
+    let result;
+    if (request.method === "initialize") result = { protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "annotatekit", version: "0.5.0" } };
+    else if (request.method === "ping") result = {};
+    else if (request.method === "tools/list") result = { tools: toolDefinitions };
+    else if (request.method === "tools/call") result = await callTool(request.params?.name, request.params?.arguments);
+    else throw Object.assign(new Error(`Method not found: ${request.method}`), { code: -32601 });
+    sendRpc({ jsonrpc: "2.0", id: request.id, result });
+  } catch (error) { sendRpc({ jsonrpc: "2.0", id: request.id, error: { code: error.code ?? -32000, message: error.message } }); }
+};
 process.stdin.on("data", chunk => {
   stdinBuffer += chunk;
   let newline;
@@ -44,16 +67,7 @@ process.stdin.on("data", chunk => {
     const line = stdinBuffer.slice(0, newline).trim(); stdinBuffer = stdinBuffer.slice(newline + 1); if (!line) continue;
     let request;
     try { request = JSON.parse(line); } catch { continue; }
-    if (request.id === undefined) continue;
-    try {
-      let result;
-      if (request.method === "initialize") result = { protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "annotatekit", version: "0.5.0" } };
-      else if (request.method === "ping") result = {};
-      else if (request.method === "tools/list") result = { tools: toolDefinitions };
-      else if (request.method === "tools/call") result = callTool(request.params?.name, request.params?.arguments);
-      else throw Object.assign(new Error(`Method not found: ${request.method}`), { code: -32601 });
-      sendRpc({ jsonrpc: "2.0", id: request.id, result });
-    } catch (error) { sendRpc({ jsonrpc: "2.0", id: request.id, error: { code: error.code ?? -32000, message: error.message } }); }
+    void handleRpc(request);
   }
 });
 
@@ -72,7 +86,7 @@ const httpServer = createServer(async (request, response) => {
     match = path.match(/^\/sessions\/([^/]+)\/pending$/);
     if (match && method === "GET") return json(response, 200, { annotations: pending(match[1]) });
     match = path.match(/^\/sessions\/([^/]+)\/action$/);
-    if (match && method === "POST") { requiredSession(match[1]); await readBody(request); return json(response, 200, { success: true }); }
+    if (match && method === "POST") { requiredSession(match[1]); await readBody(request); notifySend(match[1]); emit("action.sent", match[1], { annotationCount: pending(match[1]).length }); return json(response, 200, { success: true }); }
     match = path.match(/^\/annotations\/([^/]+)$/);
     if (match && method === "PATCH") { const { session } = findAnnotation(match[1]); return json(response, 200, updateAnnotation(session, match[1], await readBody(request))); }
     if (match && method === "DELETE") { const { session } = findAnnotation(match[1]); session.annotations.delete(match[1]); emit("annotation.deleted", session.id, { id: match[1] }); response.writeHead(204); return response.end(); }

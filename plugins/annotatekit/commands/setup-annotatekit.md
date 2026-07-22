@@ -14,4 +14,6 @@ Do not stop after editing package metadata. Build the generic iOS target, explai
 3. Enter the feedback and tap **Send**.
 4. In Cursor, ask to process pending AnnotateKit feedback.
 
+For the hands-free loop, finish by offering to run `/watch-annotatekit`. While that command is active, tapping **Send** releases the waiting MCP call and Cursor proceeds automatically.
+
 Report any step that could not be verified instead of claiming setup is complete.

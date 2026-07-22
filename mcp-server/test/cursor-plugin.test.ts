@@ -27,5 +27,11 @@ test("bundled Cursor connector starts MCP and shares iOS annotations", async () 
     await fetch(`http://127.0.0.1:${port}/sessions/${session.id}/annotations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "cursor-a1", comment: "Move this exact button", elementIdentifier: "submit-button" }) });
     const pending = await rpc(3, "tools/call", { name: "annotatekit_get_pending", arguments: { sessionId: session.id } });
     assert.match(pending.result.content[0].text, /cursor-a1/);
+    const watching = rpc(4, "tools/call", { name: "annotatekit_watch_send", arguments: { sessionId: session.id, timeoutSeconds: 2 } });
+    await new Promise(done => setTimeout(done, 25));
+    await fetch(`http://127.0.0.1:${port}/sessions/${session.id}/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ output: "sent from iOS" }) });
+    const sent = await watching;
+    assert.match(sent.result.content[0].text, /"sent": true/);
+    assert.match(sent.result.content[0].text, /cursor-a1/);
   } finally { child.kill("SIGTERM"); lines.close(); }
 });
