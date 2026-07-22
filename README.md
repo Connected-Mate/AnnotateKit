@@ -103,6 +103,8 @@ Then point AnnotateKit to `http://127.0.0.1:4747` in Simulator, or to your Mac's
 
 The connector exposes narrowly scoped tools to list sessions, read feedback, acknowledge work, reply, resolve, and dismiss. Each tool carries explicit MCP safety annotations required by public connector directories.
 
+The Cursor/Codex plugin also includes an iOS setup workflow. Ask the agent to **install AnnotateKit in this iOS app**: it adds the Swift Package to the application target, places `.annotationOverlay()` at the SwiftUI root, and configures the local bridge. After that, annotate the exact element in the running Debug app and tap **Send**; the same bundled MCP process makes those annotations immediately available to the coding agent.
+
 Five transports, use whichever fits your loop:
 
 1. **MCP, real time (the good one)** — run Agentation's own companion server on your Mac and point AnnotateKit at it:

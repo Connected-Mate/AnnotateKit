@@ -1,10 +1,10 @@
 {
   "name": "annotatekit",
   "version": "0.5.0",
-  "description": "Turn iOS visual feedback into actionable coding-agent context.",
+  "description": "Install AnnotateKit in an iOS app and send precise on-screen annotations directly to coding agents over MCP.",
   "author": {
-    "name": "Connected Mate",
-    "email": "support@connected-mate.com",
+    "name": "AnnotateKit",
+    "email": "connected.mate@gmail.com",
     "url": "https://github.com/Connected-Mate"
   },
   "homepage": "https://github.com/Connected-Mate/AnnotateKit",
@@ -16,7 +16,7 @@
     "displayName": "AnnotateKit",
     "shortDescription": "Act on iOS visual feedback",
     "longDescription": "AnnotateKit connects visual feedback captured directly in an iOS Debug build to coding agents. Inspect pending annotations with accessibility identity, nearby text, view hierarchy, styles, position, and intent; reply to the reviewer; then acknowledge, resolve, or dismiss each item.",
-    "developerName": "Connected Mate",
+    "developerName": "AnnotateKit",
     "category": "Developer Tools",
     "capabilities": ["Read iOS UI annotations", "Update annotation status", "Reply to annotation threads"],
     "websiteURL": "https://github.com/Connected-Mate/AnnotateKit",
